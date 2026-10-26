@@ -1,0 +1,64 @@
+# Shared website inventory. MUST be identical on both servers (IDC and FC);
+# the servers compare its SHA-256 in every heartbeat and alert on mismatch.
+# Keep it in Git and roll it out to both servers from CI.
+version: "2026-10-26T12:01:34Z"
+defaults:
+  timeout: 10s
+  user_agent: "SiteMonitor/1.0 (+ops@example.com)"
+  cert_warn_days: 30 # WARN when the certificate expires within 30 days
+  cert_crit_days: 7 # CRIT within 7 days
+  intervals: # short intervals for the demo; production: see docs/DESIGN.md
+    availability: 30s
+    api: 1m
+    cert: 2m
+    tls: 5m
+    headers: 5m
+sites:
+  # ---------------- IDC region ----------------
+  - name: idc-portal # healthy site
+    region: IDC
+    url: https://target-idc-1:8443/
+    owner: web-team
+    criticality: high
+    tls_verify: false # demo targets use self-signed certs
+    checks: [availability, tls, cert, headers]
+    expect: {status: 200, contains: "Welcome", max_latency_ms: 2000}
+  - name: idc-legacy-app # TLS 1.0/1.1 on, cert expires in 20 days, no headers
+    region: IDC
+    url: https://target-idc-2:8443/
+    owner: legacy-team
+    criticality: low
+    tls_verify: false
+    checks: [availability, tls, cert, headers]
+  # ---------------- FC region ----------------
+  - name: fc-orders-api # healthy API with sanity calls
+    region: FC
+    url: https://target-fc-1:8443
+    owner: payments-team
+    criticality: high
+    tls_verify: false
+    checks: [availability, tls, cert, api]
+    expect: {status: 200}
+    api:
+      - name: health
+        method: GET
+        path: /health
+        expect: {status: 200, json_path: "$.status", equals: "UP"}
+      - name: list-items
+        method: GET
+        path: /api/v1/items
+        headers: {Authorization: "Bearer ${ORDERS_API_TOKEN}"} # secret from env, not from this file
+        expect: {status: 200, json_path: "$.count", exists: true}
+  - name: fc-reports # cert expires in 5 days, TLS 1.3 disabled
+    region: FC
+    url: https://target-fc-2:8443/
+    owner: bi-team
+    criticality: medium
+    tls_verify: false
+    checks: [availability, tls, cert]
+
+# A real public site, to show checks against the internet (needs outbound access).
+# - name: example-com
+#   region: FC
+#   url: https://example.com/
+#   checks: [availability, tls, cert, headers]

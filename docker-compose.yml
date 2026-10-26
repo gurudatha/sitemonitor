@@ -1,0 +1,89 @@
+# Local two-region demo: IDC monitor + FC monitor + witness + 4 fake websites.
+#
+#   docker compose up -d --build
+#   IDC dashboard: https://localhost:8081   FC dashboard: https://localhost:8082
+#   (self-signed CA -> accept the browser warning)
+#   Demo logins (config/*/node.yaml, local provider): admin / Admin-Demo-Pass-1,
+#   operator / Operator-Demo-Pass-1, viewer / Viewer-Demo-Pass-1
+#
+#   The config API writes to ./config/idc and ./config/fc, so the container
+#   user (uid 65532) must own them:  sudo chown -R 65532:65532 config/idc config/fc
+#
+#   Failover test:  docker compose stop monitor-fc     (IDC takes over FC sites after ~30s)
+#   Handback test:  docker compose start monitor-fc    (handback after handback_stable_for)
+#   Site down test: curl -k -X POST https://localhost:9441/admin/toggle
+
+x-monitor: &monitor
+  build: .
+  image: sitemonitor:latest
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  environment:
+    ORDERS_API_TOKEN: ${ORDERS_API_TOKEN:-demo-token}
+    ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
+    LDAP_BIND_PASSWORD: ${LDAP_BIND_PASSWORD:-}  # only used when auth.providers includes ldap
+    GOMEMLIMIT: 200MiB          # Go GC target; keep ~20% below mem_limit
+  mem_limit: 256m               # enough for ~100 sites at history_per_check: 200
+  depends_on:
+    certs: { condition: service_completed_successfully }
+
+x-target: &target
+  image: sitemonitor:latest
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  depends_on:
+    certs: { condition: service_completed_successfully }
+
+services:
+  # One-shot: creates the private CA and the mTLS certificates (kept in a volume).
+  certs:
+    build: .
+    image: sitemonitor:latest
+    command: ["gen-certs", "-out", "/certs", "-names", "monitor-idc-01,monitor-fc-01,witness"]
+    volumes: [certs:/certs]
+
+  witness:
+    <<: *target
+    command: ["witness", "-addr", ":9443", "-cert", "/certs/witness.crt", "-key", "/certs/witness.key", "-ca", "/certs/ca.crt"]
+    volumes: [certs:/certs:ro]
+
+  monitor-idc-01:
+    <<: *monitor
+    hostname: monitor-idc-01
+    volumes:
+      - ./config/idc:/etc/monitor            # node.yaml + sites.yaml (+ backups/); writable for the config API
+      - certs:/certs:ro
+      - idc-data:/data
+    ports: ["8081:8080"]
+
+  monitor-fc-01:
+    <<: *monitor
+    hostname: monitor-fc-01
+    volumes:
+      - ./config/fc:/etc/monitor
+      - certs:/certs:ro
+      - fc-data:/data
+    ports: ["8082:8080"]
+
+  # ---- fake websites (demo only) ----
+  target-idc-1:
+    <<: *target
+    command: ["demo-target", "-name", "target-idc-1", "-cert-days", "365"]
+  target-idc-2:
+    <<: *target
+    command: ["demo-target", "-name", "target-idc-2", "-cert-days", "20", "-legacy-tls"]
+  target-fc-1:
+    <<: *target
+    command: ["demo-target", "-name", "target-fc-1", "-cert-days", "365"]
+    ports: ["9441:8443"]   # exposed so you can POST /admin/toggle to simulate an outage
+  target-fc-2:
+    <<: *target
+    command: ["demo-target", "-name", "target-fc-2", "-cert-days", "5", "-no-tls13"]
+
+volumes:
+  certs:
+  idc-data:
+  fc-data:

@@ -1,0 +1,108 @@
+# node.yaml: identity and settings of THIS server (one file per server).
+# This file is for the IDC server. Values like ${VAR} come from the environment.
+# Editable through the API by admins (PUT /api/config/node); identity fields
+# (node.id/region, peer.id/region, tls.*) can only be changed on disk.
+
+node:
+  id: monitor-idc-01                # identity; must equal the TLS certificate CN
+  name: "IDC Monitor - Primary DC"  # display name (dashboard, events, metrics)
+  region: IDC                       # IDC | FC  <- this server's home region
+  peer_listen: ":8443"              # mTLS: peer + witness traffic only
+  dashboard_listen: ":8080"         # HTTPS: dashboard, APIs, /metrics
+  data_dir: /data                   # results.json + ownership.yaml
+
+peer:
+  id: monitor-fc-01
+  name: "FC Monitor - Secondary Site"
+  region: FC
+  url: https://monitor-fc-01:8443
+  heartbeat_interval: 5s
+  heartbeat_timeout: 2s
+  suspect_after: 3                  # 3 missed beats (15s) -> SUSPECT
+  down_after: 6                     # 6 missed beats (30s) -> DOWN -> takeover
+  handback_stable_for: 1m           # peer healthy this long before handback (prod: 2m+)
+
+witness:                            # third location; prevents split-brain. url: "" disables
+  url: https://witness:9443
+  required_for_takeover: true
+  lease_ttl: 20s
+
+tls:
+  cert: /certs/monitor-idc-01.crt
+  key: /certs/monitor-idc-01.key
+  ca: /certs/ca.crt
+
+monitor:
+  sites_file: /etc/monitor/sites.yaml
+  failures_to_alert: 2              # consecutive CRIT results before alerting
+
+# Every pool, queue and size limit in the process. Restart to apply changes.
+limits:
+  workers: 20                       # goroutines running checks (global concurrency)
+  per_host_limit: 2                 # concurrent connections to one monitored site
+  queue_size: 500                   # pending check jobs (excess runs are skipped + counted)
+  verify_concurrency: 4             # concurrent cross-region verify requests served for the peer
+  max_sites: 2000                   # sites.yaml with more sites is rejected
+  history_per_check: 200            # results kept per site/check (~0.6 KB each in RAM)
+  max_events: 500                   # events kept
+  max_response_body_kb: 1024        # bytes read from a monitored site
+  max_redirects: 5
+  replication_queue: 20000          # results+events waiting for the peer (oldest dropped)
+  replication_batch: 1000           # items per push
+  replication_interval: 2s
+  max_replication_body_mb: 32       # largest batch accepted from the peer
+  max_api_body_kb: 1024             # login / API request bodies
+  max_config_size_kb: 1024          # sites.yaml / node.yaml size accepted by the config API
+  snapshot_interval: 30s            # results.json write period
+  http_read_timeout: 30s
+  http_write_timeout: 60s
+
+# Who may use the dashboard and APIs.
+#   POC:        providers: [local]
+#   Production: providers: [ldap]          (Active Directory)
+#   or          providers: [ldap, local]   (AD + local break-glass admin if AD is down)
+# Roles: viewer (read) < operator (edit sites.yaml) < admin (edit node.yaml, restart)
+auth:
+  providers: [local]
+  session_ttl: 8h
+  max_sessions: 1000
+  basic_cache_ttl: 1m               # API clients using Basic auth: cache success (avoids an AD bind per call)
+  max_failed_logins: 5              # then lock that user+IP for `lockout`
+  lockout: 5m
+
+  local:
+    users:                          # DEMO ONLY - replace hashes: echo 'new-password' | monitor hash-password
+      - username: admin             # password: Admin-Demo-Pass-1
+        password_hash: "$2a$12$PGbHbT4zKXy2RWKACbMwEe4DEY4svmZjr6e1xSHjTuyCvHhl/UoNK"
+        role: admin
+        display_name: "Demo Admin"
+      - username: operator          # password: Operator-Demo-Pass-1
+        password_hash: "$2a$12$fF9KTqYvGXXO6sEFN1Ms/OFnE02XLF1F9lruUGzRzJB6mmu92V0Gm"
+        role: operator
+      - username: viewer            # password: Viewer-Demo-Pass-1
+        password_hash: "$2a$12$5jdIvixBVfIk42ztnz.xk.W0C.rBGXqAMXk.TSMNuC9dXefsRn3gG"
+        role: viewer
+
+  ldap:                             # used when "ldap" is listed in providers
+    url: ldaps://dc01.corp.example.com:636
+    start_tls: false                # true for ldap://...:389 (plain ldap:// is refused)
+    ca_file: /certs/ad-ca.crt       # AD CA; empty = system trust store
+    insecure_skip_verify: false
+    bind_dn: "CN=svc-sitemonitor,OU=Service Accounts,DC=corp,DC=example,DC=com"
+    bind_password: "${LDAP_BIND_PASSWORD}"
+    base_dn: "DC=corp,DC=example,DC=com"
+    user_filter: "(&(objectClass=user)(sAMAccountName={username}))"
+    display_attr: displayName
+    nested_groups: true             # AD transitive membership (LDAP_MATCHING_RULE_IN_CHAIN)
+    timeout: 5s
+    role_groups:
+      admin:    ["CN=SiteMonitor-Admins,OU=Groups,DC=corp,DC=example,DC=com"]
+      operator: ["CN=SiteMonitor-Operators,OU=Groups,DC=corp,DC=example,DC=com"]
+      viewer:   ["CN=SiteMonitor-Viewers,OU=Groups,DC=corp,DC=example,DC=com"]
+    default_role: ""                # empty = users in no mapped group are denied
+
+config_api:
+  enabled: true
+  sync_to_peer: true                # push sites.yaml changes to the peer immediately
+  auto_pull_newer: true             # on mismatch, fetch the newer sites.yaml from the peer
+  backups: 10                       # previous versions kept in <config dir>/backups/
