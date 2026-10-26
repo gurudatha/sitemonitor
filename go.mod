@@ -1,11 +1,11 @@
 module sitemonitor
 
-go 1.26.0
+go 1.24.13
 
 require (
-	github.com/go-ldap/ldap/v3 v3.4.15
+	github.com/go-ldap/ldap/v3 v3.4.13
 	github.com/jimlambrt/gldap v0.1.14
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.48.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -22,5 +22,5 @@ require (
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/stretchr/testify v1.9.0 // indirect
 	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948 // indirect
-	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/sys v0.41.0 // indirect
 )

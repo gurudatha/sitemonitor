@@ -55,6 +55,11 @@ can carry both regions):
 
 - Set `GOMEMLIMIT` to about 80 % of the container or VM memory limit, so
   the Go garbage collector works harder before it hits that limit.
+- Set **`GOMAXPROCS`** to the container's CPU limit (for example `2`).
+  The build uses Go 1.24, which sizes its thread pool from the
+  **host's** CPU count and ignores container CPU limits; Go 1.25+ does
+  this automatically. Without it, a container limited to 2 CPUs on a
+  32-core host gets throttled.
 - To reduce memory, lower `limits.history_per_check` in `node.yaml`.
   Long-term history belongs in Prometheus (see section 7).
 - CPU usage is very low; the demo idles at about 0.05 %. The TLS check

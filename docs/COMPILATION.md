@@ -4,11 +4,24 @@
 
 | Tool | Version | Needed for |
 |---|---|---|
-| Go | 1.24 or newer | Building the binary |
+| Go | **1.24.13** (pinned in `go.mod` and the `Dockerfile`; newer versions also work) | Building the binary |
 | Docker Engine + Compose v2 | 24+ / v2.20+ | Container image, local demo |
 | git | any | Getting the source |
 
-Only one third-party module is used: `gopkg.in/yaml.v3`. The dashboard
+Third-party modules: `gopkg.in/yaml.v3` (config), `golang.org/x/crypto`
+(bcrypt) and `github.com/go-ldap/ldap/v3` (Active Directory).
+`github.com/jimlambrt/gldap` is used only by tests.
+
+The module targets **Go 1.24.13**: `go.mod` says `go 1.24.13`, and the
+dependencies are the newest versions that still support 1.24
+(`x/crypto v0.48.0`, `go-ldap v3.4.13`). Don't run `go get -u` with a
+newer Go. It will pull versions that require Go 1.26 and raise the
+`go` line. To update dependencies while staying on 1.24, use:
+
+```bash
+GOTOOLCHAIN=go1.26.0 go get -u ./... && GOTOOLCHAIN=go1.26.0 go get go@1.24.13 toolchain@none
+GOTOOLCHAIN=go1.24.13 go test ./...
+``` The dashboard
 (HTML/CSS/JS) is embedded into the binary with `go:embed`, so there is
 no Node.js or frontend build step.
 
