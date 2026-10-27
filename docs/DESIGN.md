@@ -223,6 +223,44 @@ everything**.
 - **Cluster events:** `PEER` (HEALTHY, SUSPECT or DOWN), `FAILOVER`,
   `HANDBACK`, `CONFIG` (reload or mismatch), and witness reachability.
 
+### 6.1 Incidents: one record per problem
+
+Every problem-type event carries a **key** that names the problem:
+
+| Key | Problem | Cleared by |
+|---|---|---|
+| `site:<site>\|<check>` | A site/check is WARN or CRIT | RECOVERY of that check |
+| `peer:<node>-><peer>` | Peer SUSPECT / DOWN | Peer HEALTHY |
+| `witness:<node>` | Witness unreachable | Witness reachable |
+| `failover:<region>` | A region taken over | HANDBACK |
+| `standby:<node>` | Server waiting for handback | Server resumes its home region |
+| `config-mismatch` | `sites.yaml` differs between servers | Identical again |
+| `takeover-blocked:<node>` | Takeover refused (witness) | No longer blocked |
+
+The store groups events with the same key into one **incident**:
+
+| Situation | What is stored |
+|---|---|
+| First report | New incident with status OPEN. The event is stored and notified; its time is `first_seen` |
+| The same problem again while still open (restart, takeover, the other server reporting it, a late replicated copy) | **No new event and no new notification.** `occurrences` is incremented, `last_seen` is updated, the reporting server is added to `seen_by`, and `first_seen` moves back if the report is older, so **the oldest date always wins** |
+| Severity changes while open (WARN to CRIT) | Event stored, with a SEVERITY transition |
+| Problem clears | RECOVERY event stored, annotated "first seen …, open for …". Status becomes CLEARED and `cleared` is incremented |
+| A second "cleared" for an already cleared problem | Suppressed |
+| **Problem comes back after clearing** | Event stored as `REAPPEARED: … (first seen …, cleared …, reappearance #n)`. Status becomes OPEN again, `reappeared` is incremented, and `first_seen` stays at the original date |
+
+Each incident keeps a history of up to 50 transitions; the first one is
+always kept. Incidents are saved in the snapshot and replicated with the
+events, so both servers show the same history.
+
+The evaluator also starts from the incident store. After a restart, or
+when taking over the peer's region, a check whose incident is still open
+continues that incident instead of raising a new one. When it recovers,
+the incident is cleared normally.
+
+The dashboard's **Incidents** table shows open incidents (oldest first)
+and recently cleared ones; click a row for the full timeline. The data
+is also available at `GET /api/incidents`.
+
 ## 7. Security
 
 | Area | Measure |

@@ -333,7 +333,7 @@ Cronitor), or your Prometheus, at both `/healthz` endpoints.
 
 | Task | Steps |
 |---|---|
-| **Add or change a site** | Any one of: (a) the dashboard editor (operator); (b) `PUT /api/config/sites/{name}` or a whole-file `PUT` (see [API.md](API.md)); (c) edit `sites.yaml` on disk, or roll it out from Git/CI. The API applies the change immediately and syncs it to the peer. File edits are picked up within 10 s, and the server with the older file pulls the newer one automatically |
+| **Add or change a site** | Either: (a) `PUT /api/config/sites/{name}` or a whole-file `PUT` with an operator account (see [API.md](API.md)); or (b) edit `sites.yaml` on disk, or roll it out from Git/CI. The API applies the change immediately and syncs it to the peer. File edits are picked up within 10 s, and the server with the older file pulls the newer one automatically |
 | **Change limits, names or auth** | `GET /api/config/node`, edit, `PUT /api/config/node?restart=true` (admin), on each server. Or edit the file and restart. Identity fields (`id`, `region`, `tls`) only on disk |
 | **Undo a config change** | `GET /api/config/backups?file=sites` lists versions; copy one from `<config dir>/backups/` back, or `PUT` its content |
 | **Planned maintenance on one server** | `docker compose stop` (or `systemctl stop`). Its leases are released on shutdown, so the peer takes over after about 30 s. Start it again; handback follows `handback_stable_for` later |

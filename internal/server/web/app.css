@@ -88,7 +88,9 @@ button.link { background: none; border: 0; color: var(--info); padding: 0; }
 .login-card label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 .login-card input { font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
 .error { color: var(--crit); min-height: 1em; margin: 0; font-size: 13px; }
-.editor-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-#cfg-text { width: 100%; min-height: 380px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 12px; resize: vertical; }
-.cfg-result { white-space: pre-wrap; font-size: 12.5px; margin: 8px 0 0; color: var(--muted); }
-.cfg-result.ok { color: var(--ok); } .cfg-result.bad { color: var(--crit); }
+td.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover td { background: var(--bg); }
+h2 .muted { font-weight: 400; font-size: 13px; margin-left: 6px; }
+.timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.timeline time { color: var(--muted); font-variant-numeric: tabular-nums; }

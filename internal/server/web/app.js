@@ -6,7 +6,6 @@ const CHECKS = ["availability", "tls", "cert", "headers", "api"];
 const $ = (id) => document.getElementById(id);
 let last = null;
 let me = null;          // {user, csrf_token, node_name}
-let cfgETag = "";
 let timer = null;
 
 // Every API call: same-origin cookie session + CSRF header for writes.
@@ -168,6 +167,51 @@ function renderEvents(d) {
     )));
 }
 
+const STATE_SEV = { RAISED: null, SEVERITY: null, CLEARED: "OK", REAPPEARED: "CRIT" };
+
+function subject(inc) {
+  if (inc.site) return `${inc.site} / ${inc.check}`;
+  return inc.key.replace(/^[a-z-]+:/, (m) => m.slice(0, -1) + " ");
+}
+
+function renderIncidents(d) {
+  const list = d.incidents || [];
+  const open = list.filter((i) => i.status === "OPEN").length;
+  $("incidents-summary").textContent = `${open} open · ${list.length - open} cleared`;
+  $("incidents").tBodies[0].replaceChildren(...list.map((inc) => {
+    const tr = el("tr", { cls: "clickable", title: "Click for full history" },
+      el("td", {}, badge(inc.status === "OPEN" ? inc.severity : "OK", inc.status)),
+      el("td", {}, el("span", { cls: "site-name", text: subject(inc) }), el("span", { cls: "msg", text: inc.message })),
+      el("td", { text: fmtTime(inc.first_seen) }),
+      el("td", { text: inc.status === "OPEN" ? ago(inc.last_seen) : "cleared " + fmtTime(inc.cleared_at) }),
+      el("td", { cls: "num", text: String(inc.occurrences) }),
+      el("td", { cls: "num", text: String(inc.cleared) }),
+      el("td", { cls: "num", text: String(inc.reappeared) }),
+      el("td", { text: (inc.seen_by || []).join(", ") }),
+    );
+    tr.addEventListener("click", () => showIncident(inc));
+    return tr;
+  }));
+}
+
+function showIncident(inc) {
+  $("detail-title").textContent = subject(inc);
+  const pairs = [
+    ["Status", inc.status], ["Severity", inc.severity], ["First seen", fmtTime(inc.first_seen)],
+    ["Last seen", fmtTime(inc.last_seen)], ["Occurrences", String(inc.occurrences)],
+    ["Cleared", `${inc.cleared} time(s)`], ["Reappeared", `${inc.reappeared} time(s)`],
+    ["Seen by", (inc.seen_by || []).join(", ")],
+  ];
+  const body = pairs.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]);
+  body.push(el("dt", { text: "History" }), el("dd", {}, el("ol", { cls: "timeline" },
+    ...inc.history.map((t) => el("li", {},
+      badge(STATE_SEV[t.state] || t.severity, t.state),
+      el("time", { text: " " + fmtTime(t.time) + " " }),
+      el("span", { text: `${t.message} — ${t.node}` }))))));
+  $("detail-body").replaceChildren(...body);
+  $("detail").showModal();
+}
+
 function showDetail(site, r) {
   $("detail-title").textContent = `${site.name} · ${r.check}`;
   const pairs = [
@@ -186,6 +230,7 @@ function render(d) {
   renderSites(d);
   renderCerts(d);
   renderTLS(d);
+  renderIncidents(d);
   renderEvents(d);
   $("updated").textContent = "updated " + new Date().toLocaleTimeString();
 }
@@ -221,9 +266,6 @@ async function showApp() {
   $("app-view").hidden = false;
   const u = me.user;
   $("user").textContent = `${u.display_name} · ${u.role} (${u.provider})`;
-  const canEdit = me.config_api && (u.role === "operator" || u.role === "admin");
-  $("config-section").hidden = !canEdit;
-  if (canEdit) loadConfig();
   await refresh();
   timer = setInterval(refresh, 5000);
 }
@@ -249,43 +291,6 @@ $("login-form").addEventListener("submit", async (ev) => {
 $("logout").addEventListener("click", async () => {
   await fetch("api/logout", { method: "POST", credentials: "same-origin" });
   showLogin();
-});
-
-// ---------- sites.yaml editor (operator/admin) ----------
-
-function cfgResult(text, ok) {
-  const r = $("cfg-result");
-  r.textContent = text;
-  r.className = "cfg-result " + (ok ? "ok" : "bad");
-}
-
-async function loadConfig() {
-  const res = await api("api/config/sites");
-  $("cfg-text").value = await res.text();
-  cfgETag = res.headers.get("ETag") || "";
-  $("cfg-meta").textContent = "loaded " + new Date().toLocaleTimeString();
-  cfgResult("", true);
-}
-
-$("cfg-load").addEventListener("click", loadConfig);
-$("cfg-validate").addEventListener("click", async () => {
-  const res = await api("api/config/sites/validate", { method: "POST", body: $("cfg-text").value, headers: { "Content-Type": "application/yaml" } });
-  const body = await res.json();
-  cfgResult(res.ok ? `valid: version ${body.version}, ${body.sites} sites` : body.error, res.ok);
-});
-$("cfg-save").addEventListener("click", async () => {
-  const res = await api("api/config/sites", { method: "PUT", body: $("cfg-text").value, headers: { "Content-Type": "application/yaml", "If-Match": cfgETag } });
-  const body = await res.json();
-  if (!res.ok) { cfgResult((res.status === 412 ? "Conflict: " : "") + body.error, false); return; }
-  cfgETag = res.headers.get("ETag") || cfgETag;
-  const d = body.diff || {};
-  const parts = [];
-  if (d.added && d.added.length) parts.push("added " + d.added.join(", "));
-  if (d.removed && d.removed.length) parts.push("removed " + d.removed.join(", "));
-  if (d.changed && d.changed.length) parts.push("changed " + d.changed.join(", "));
-  const peer = body.peer_synced === undefined ? "" : body.peer_synced ? " · synced to peer" : " · peer not reachable (will auto-sync): " + body.peer_error;
-  cfgResult(body.changed ? `saved version ${body.version}: ${parts.join("; ") || "no site changes"}${peer}` : "no changes", true);
-  refresh();
 });
 
 $("f-region").addEventListener("change", () => last && renderSites(last));

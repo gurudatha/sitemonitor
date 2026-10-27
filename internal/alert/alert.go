@@ -19,6 +19,16 @@ import (
 
 var eventSeq atomic.Int64
 
+// SiteKey is the incident key for a site/check problem.
+func SiteKey(site, check string) string { return "site:" + site + "|" + check }
+
+// NewKeyedEvent builds an event that belongs to the incident identified by key.
+func NewKeyedEvent(node, kind, severity, key, msg string) store.Event {
+	e := NewEvent(node, kind, severity, "", "", msg)
+	e.Key = key
+	return e
+}
+
 // NewEvent builds an event with a cluster-unique ID.
 func NewEvent(node, kind, severity, site, check, msg string) store.Event {
 	now := time.Now().UTC()
@@ -63,9 +73,15 @@ func (n *Notifier) Send(e store.Event) {
 type VerifyFunc func(site, check string) (checks.Result, bool)
 
 type checkState struct {
-	fails int
-	level string // OK | WARN | CRIT | LOCAL
+	fails    int
+	level    string // OK | WARN | CRIT | LOCAL
+	lastSeen time.Time
 }
+
+// stateTTL: local state older than this is re-read from the incident store
+// (e.g. this server monitored the region before, handed it back, and has
+// now taken it over again).
+const stateTTL = 10 * time.Minute
 
 // Evaluator applies flap control: CRIT only after N consecutive failures,
 // and only state *changes* produce events.
@@ -74,23 +90,35 @@ type Evaluator struct {
 	failuresToAlert int
 	emit            func(store.Event)
 	verify          VerifyFunc
+	incidentLevel   func(key string) string // current level of the open incident, "OK" if none
 
 	mu    sync.Mutex
 	state map[string]*checkState
 }
 
-func NewEvaluator(node string, failuresToAlert int, emit func(store.Event), verify VerifyFunc) *Evaluator {
-	return &Evaluator{node: node, failuresToAlert: failuresToAlert, emit: emit, verify: verify, state: map[string]*checkState{}}
+func NewEvaluator(node string, failuresToAlert int, emit func(store.Event), verify VerifyFunc, incidentLevel func(string) string) *Evaluator {
+	return &Evaluator{node: node, failuresToAlert: failuresToAlert, emit: emit, verify: verify,
+		incidentLevel: incidentLevel, state: map[string]*checkState{}}
 }
 
 func (e *Evaluator) Process(r checks.Result) {
 	e.mu.Lock()
-	k := r.Site + "|" + r.Check
+	k := SiteKey(r.Site, r.Check)
 	st := e.state[k]
-	if st == nil {
-		st = &checkState{level: checks.StatusOK}
+	if st == nil || time.Since(st.lastSeen) > stateTTL {
+		// Continue an incident that is already open (raised before a restart,
+		// or by the peer before a takeover) instead of raising it again.
+		lvl := checks.StatusOK
+		if e.incidentLevel != nil {
+			lvl = e.incidentLevel(k)
+		}
+		st = &checkState{level: lvl}
+		if lvl == checks.StatusCrit {
+			st.fails = e.failuresToAlert
+		}
 		e.state[k] = st
 	}
+	st.lastSeen = time.Now()
 	level := r.Status
 	if r.Status == checks.StatusCrit {
 		st.fails++
@@ -128,12 +156,15 @@ func (e *Evaluator) Process(r checks.Result) {
 	st.level = level
 	e.mu.Unlock()
 
+	var ev store.Event
 	switch level {
 	case checks.StatusOK:
-		e.emit(NewEvent(e.node, "RECOVERY", checks.StatusOK, r.Site, r.Check, "recovered: "+r.Message))
+		ev = NewEvent(e.node, "RECOVERY", checks.StatusOK, r.Site, r.Check, "recovered: "+r.Message)
 	case "LOCAL":
-		e.emit(NewEvent(e.node, "ALERT", checks.StatusWarn, r.Site, r.Check, msg))
+		ev = NewEvent(e.node, "ALERT", checks.StatusWarn, r.Site, r.Check, msg)
 	default:
-		e.emit(NewEvent(e.node, "ALERT", level, r.Site, r.Check, msg))
+		ev = NewEvent(e.node, "ALERT", level, r.Site, r.Check, msg)
 	}
+	ev.Key = k
+	e.emit(ev)
 }

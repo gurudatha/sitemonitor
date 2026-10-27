@@ -31,6 +31,9 @@ Key properties:
   mutual TLS. A witness lease prevents split-brain, failover takes about
   30 seconds, and handback is automatic. Results and events are
   replicated to both servers.
+- **Incidents, not alert storms.** Repeats of the same problem are
+  collapsed into one incident that keeps the first date. Clearing and
+  re-appearance are both recorded.
 - **Fewer false alarms.** An alert fires only after N consecutive
   failures. Before reporting a site as down, the server asks its peer
   in the other region to check the same site.

@@ -245,6 +245,12 @@ func (m *Manager) event(kind, sev, msg string) {
 	m.emit(alert.NewEvent(m.cfg.Node.ID, kind, sev, "", "", msg))
 }
 
+// keyed emits an event that belongs to an incident (raised by WARN/CRIT,
+// cleared by OK), so repeats are collapsed and clear/reappear are recorded.
+func (m *Manager) keyed(kind, sev, key, msg string) {
+	m.emit(alert.NewKeyedEvent(m.cfg.Node.ID, kind, sev, key, msg))
+}
+
 func (m *Manager) tick(ctx context.Context) {
 	hb, err := m.sendHeartbeat(ctx)
 	ls := m.local()
@@ -308,13 +314,13 @@ func (m *Manager) tick(ctx context.Context) {
 		if lastErr != "" && status != PeerHealthy {
 			msg += ": " + lastErr
 		}
-		m.event("PEER", sev, msg)
+		m.keyed("PEER", sev, "peer:"+m.cfg.Node.ID+"->"+m.cfg.Peer.ID, msg)
 	}
 	if configChanged {
 		if match {
-			m.event("CONFIG", "OK", "sites.yaml identical on both servers again")
+			m.keyed("CONFIG", "OK", "config-mismatch", "sites.yaml identical on both servers again")
 		} else {
-			m.event("CONFIG", "WARN", fmt.Sprintf("sites.yaml differs: local %s vs peer %s", ls.ConfigVersion, hb.ConfigVersion))
+			m.keyed("CONFIG", "WARN", "config-mismatch", fmt.Sprintf("sites.yaml differs: local %s vs peer %s", ls.ConfigVersion, hb.ConfigVersion))
 		}
 	}
 
@@ -387,28 +393,32 @@ func (m *Manager) tick(ctx context.Context) {
 	epoch := m.epoch
 	m.mu.Unlock()
 
-	if blockedChanged && blocked != "" {
-		m.event("FAILOVER", "CRIT", "takeover of "+m.peerRegion()+" blocked: "+blocked)
+	if blockedChanged {
+		if blocked != "" {
+			m.keyed("FAILOVER", "CRIT", "takeover-blocked:"+m.cfg.Node.ID, "takeover of "+m.peerRegion()+" blocked: "+blocked)
+		} else {
+			m.keyed("FAILOVER", "OK", "takeover-blocked:"+m.cfg.Node.ID, "takeover of "+m.peerRegion()+" no longer blocked")
+		}
 	}
 	if !changed {
 		return
 	}
 	switch {
 	case wantPeer && !hadPeer:
-		m.event("FAILOVER", "CRIT", fmt.Sprintf("%s is DOWN: %s now monitoring %s sites (epoch %d)", m.cfg.Peer.ID, m.cfg.Node.ID, m.peerRegion(), epoch))
+		m.keyed("FAILOVER", "CRIT", "failover:"+m.peerRegion(), fmt.Sprintf("%s is DOWN: %s now monitoring %s sites (epoch %d)", m.cfg.Peer.ID, m.cfg.Node.ID, m.peerRegion(), epoch))
 	case !wantPeer && hadPeer:
 		if m.witness() {
 			m.release(ctx, m.peerRegion())
 		}
-		m.event("HANDBACK", "OK", fmt.Sprintf("%s healthy for %s: handing %s sites back (epoch %d)", m.cfg.Peer.ID, healthyFor.Round(time.Second), m.peerRegion(), epoch))
+		m.keyed("HANDBACK", "OK", "failover:"+m.peerRegion(), fmt.Sprintf("%s healthy for %s: handing %s sites back (epoch %d)", m.cfg.Peer.ID, healthyFor.Round(time.Second), m.peerRegion(), epoch))
 	}
 	switch {
 	case first && wantHome:
 		m.event("INFO", "OK", fmt.Sprintf("started: monitoring home region %s (epoch %d)", m.home(), epoch))
 	case !wantHome && (first || hadHome):
-		m.event("INFO", "WARN", fmt.Sprintf("STANDBY: %s sites are still owned by %s; waiting for handback", m.home(), m.cfg.Peer.ID))
+		m.keyed("INFO", "WARN", "standby:"+m.cfg.Node.ID, fmt.Sprintf("STANDBY: %s sites are still owned by %s; waiting for handback", m.home(), m.cfg.Peer.ID))
 	case wantHome && !hadHome:
-		m.event("INFO", "OK", fmt.Sprintf("resumed monitoring home region %s (epoch %d)", m.home(), epoch))
+		m.keyed("INFO", "OK", "standby:"+m.cfg.Node.ID, fmt.Sprintf("resumed monitoring home region %s (epoch %d)", m.home(), epoch))
 	}
 	m.persist()
 }
@@ -420,9 +430,9 @@ func (m *Manager) setWitnessOK(ok bool) {
 	m.mu.Unlock()
 	if changed {
 		if ok {
-			m.event("PEER", "OK", "witness reachable again")
+			m.keyed("PEER", "OK", "witness:"+m.cfg.Node.ID, "witness reachable again")
 		} else {
-			m.event("PEER", "WARN", "witness unreachable: "+m.cfg.Witness.URL)
+			m.keyed("PEER", "WARN", "witness:"+m.cfg.Node.ID, "witness unreachable: "+m.cfg.Witness.URL)
 		}
 	}
 }

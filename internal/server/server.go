@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -163,6 +164,7 @@ func (s *Server) DashboardHandler() http.Handler {
 		writeJSON(w, s.Store.History(r.URL.Query().Get("site"), r.URL.Query().Get("check"), 100))
 	}))
 	mux.Handle("GET /api/limits", a.RequireFunc(config.RoleViewer, s.limits))
+	mux.Handle("GET /api/incidents", a.RequireFunc(config.RoleViewer, s.incidents))
 	mux.Handle("GET /metrics", a.RequireFunc(config.RoleViewer, s.metrics))
 
 	// configuration API (see configapi.go)
@@ -275,6 +277,7 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 		"config":    map[string]string{"version": sites.Version, "hash": sites.Hash},
 		"sites":     views,
 		"events":    s.Store.Events(100),
+		"incidents": s.Store.Incidents(100),
 	})
 }
 
@@ -284,6 +287,18 @@ func asYAMLMap(v any) map[string]any {
 	out := map[string]any{}
 	_ = yaml.Unmarshal(b, &out)
 	return out
+}
+
+// incidents lists grouped events: ?status=open|cleared filters, default all (max 500).
+func (s *Server) incidents(w http.ResponseWriter, r *http.Request) {
+	want := strings.ToUpper(r.URL.Query().Get("status"))
+	out := []store.Incident{}
+	for _, inc := range s.Store.Incidents(500) {
+		if want == "" || inc.Status == want {
+			out = append(out, inc)
+		}
+	}
+	writeJSON(w, out)
 }
 
 // limits shows the effective (defaulted) limits and identities of this server.

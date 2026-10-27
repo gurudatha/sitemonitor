@@ -25,7 +25,7 @@ is used.
 | Role | Permissions |
 |---|---|
 | `viewer` | Dashboard, status, history, metrics, read `sites.yaml` |
-| `operator` | viewer + change `sites.yaml` (dashboard editor or API) |
+| `operator` | viewer + change `sites.yaml` (through the config API) |
 | `admin` | operator + read and change `node.yaml`, restart |
 
 ## 1. POC: local users

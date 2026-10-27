@@ -134,7 +134,7 @@ func runMonitor(args []string) error {
 			Saturation: stats.Saturation, LastCheck: stats.LastCheck, Healthy: sched.Healthy()}
 	}
 	cl = cluster.New(cfg, client, local, emit)
-	eval := alert.NewEvaluator(cfg.Node.ID, cfg.Monitor.FailuresToAlert, emit, cl.Verify)
+	eval := alert.NewEvaluator(cfg.Node.ID, cfg.Monitor.FailuresToAlert, emit, cl.Verify, st.IncidentLevel)
 
 	onResult := func(r checks.Result) {
 		st.AddResult(r)

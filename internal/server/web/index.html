@@ -75,21 +75,19 @@
     </div>
 
     <section>
-      <h2>Events</h2>
-      <ol class="events" id="events"></ol>
+      <h2>Incidents <span class="muted" id="incidents-summary"></span></h2>
+      <p class="muted">The same problem is tracked once: its first occurrence and date are kept, repeats are counted, and every clear and re-appearance is recorded.</p>
+      <div class="table-wrap">
+        <table id="incidents">
+          <thead><tr><th>Status</th><th>Problem</th><th>First seen</th><th>Last change</th><th>Seen</th><th>Cleared</th><th>Reappeared</th><th>Reported by</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
 
-    <section id="config-section" hidden>
-      <h2>Configuration — sites.yaml</h2>
-      <p class="muted">Changes are validated, backed up, applied immediately and synced to the peer server. Edits by another user since you loaded the file are detected.</p>
-      <div class="editor-bar">
-        <button id="cfg-load">Reload</button>
-        <button id="cfg-validate">Validate</button>
-        <button id="cfg-save" class="primary">Save &amp; apply</button>
-        <span class="muted" id="cfg-meta"></span>
-      </div>
-      <textarea id="cfg-text" spellcheck="false" aria-label="sites.yaml"></textarea>
-      <pre class="cfg-result" id="cfg-result" role="status"></pre>
+    <section>
+      <h2>Events</h2>
+      <ol class="events" id="events"></ol>
     </section>
 
     <dialog id="detail">

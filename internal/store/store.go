@@ -28,16 +28,21 @@ type Event struct {
 	Site     string    `json:"site,omitempty"`
 	Check    string    `json:"check,omitempty"`
 	Message  string    `json:"message"`
+	// Key identifies the problem this event is about (e.g. "site:shop|cert").
+	// Events with the same key are grouped into one Incident: duplicates of an
+	// open problem are dropped, clears and re-appearances are recorded.
+	Key string `json:"key,omitempty"`
 }
 
 type Store struct {
-	mu      sync.RWMutex
-	history map[string][]checks.Result // key: site|check, oldest first
-	events  []Event
-	seen    map[string]bool // event IDs
-	path    string
-	keep    int // results kept per site/check (~0.6 KB each in memory)
-	maxEv   int // events kept
+	mu        sync.RWMutex
+	history   map[string][]checks.Result // key: site|check, oldest first
+	events    []Event
+	seen      map[string]bool // event IDs
+	incidents map[string]*Incident
+	path      string
+	keep      int // results kept per site/check (~0.6 KB each in memory)
+	maxEv     int // events kept
 }
 
 // New creates a store bounded by limits.history_per_check and limits.max_events.
@@ -48,7 +53,7 @@ func New(dataDir string, historyPerCheck, maxEvents int) *Store {
 	if maxEvents <= 0 {
 		maxEvents = defaultMaxEvents
 	}
-	s := &Store{history: map[string][]checks.Result{}, seen: map[string]bool{}, path: filepath.Join(dataDir, "results.json"), keep: historyPerCheck, maxEv: maxEvents}
+	s := &Store{history: map[string][]checks.Result{}, seen: map[string]bool{}, incidents: map[string]*Incident{}, path: filepath.Join(dataDir, "results.json"), keep: historyPerCheck, maxEv: maxEvents}
 	s.load()
 	return s
 }
@@ -78,6 +83,9 @@ func (s *Store) AddResult(r checks.Result) bool {
 	return true
 }
 
+// AddEvent stores an event. It returns false for an event already stored
+// (replication) or a duplicate of an open incident; the caller then must not
+// notify or replicate it.
 func (s *Store) AddEvent(e Event) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -85,6 +93,9 @@ func (s *Store) AddEvent(e Event) bool {
 		return false
 	}
 	s.seen[e.ID] = true
+	if e.Key != "" && !s.trackLocked(&e) {
+		return false
+	}
 	i := sort.Search(len(s.events), func(i int) bool { return s.events[i].Time.After(e.Time) })
 	s.events = append(s.events, Event{})
 	copy(s.events[i+1:], s.events[i:])
@@ -157,14 +168,15 @@ func (s *Store) Uptime(site string) (float64, int) {
 }
 
 type snapshot struct {
-	History map[string][]checks.Result `json:"history"`
-	Events  []Event                    `json:"events"`
+	History   map[string][]checks.Result `json:"history"`
+	Events    []Event                    `json:"events"`
+	Incidents map[string]*Incident       `json:"incidents"`
 }
 
 // Save writes a snapshot atomically (write temp file, then rename).
 func (s *Store) Save() error {
 	s.mu.RLock()
-	b, err := json.Marshal(snapshot{History: s.history, Events: s.events})
+	b, err := json.Marshal(snapshot{History: s.history, Events: s.events, Incidents: s.incidents})
 	s.mu.RUnlock()
 	if err != nil {
 		return err
@@ -194,5 +206,8 @@ func (s *Store) load() {
 	s.events = snap.Events
 	for _, e := range s.events {
 		s.seen[e.ID] = true
+	}
+	if snap.Incidents != nil {
+		s.incidents = snap.Incidents
 	}
 }

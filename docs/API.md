@@ -45,9 +45,10 @@ providers (`auth.providers`: local users or Active Directory). See
 | Method & path | Description |
 |---|---|
 | `GET /api/me` | Current user `{username, display_name, role, provider}`, `csrf_token`, server name |
-| `GET /api/status` | Cluster state (server and peer **id + name**, mode, owned regions, epoch, heartbeat, config match, replication, witness), scheduler stats, config version, every site with its latest result per check and uptime, last 100 events |
+| `GET /api/status` | Cluster state (server and peer **id + name**, mode, owned regions, epoch, heartbeat, config match, replication, witness), scheduler stats, config version, every site with its latest result per check and uptime, last 100 events, up to 100 incidents |
 | `GET /api/history?site=<name>&check=<check>` | Last 100 results of one site/check |
 | `GET /api/limits` | Effective `node`/`peer` identity and names, all `limits`, auth summary |
+| `GET /api/incidents[?status=open\|cleared]` | Grouped problems (see DESIGN.md §6.1): `first_seen` (oldest report), `last_seen`, `occurrences`, `cleared`, `reappeared`, `seen_by`, and the `history` of RAISED / SEVERITY / CLEARED / REAPPEARED transitions. Open incidents come first (oldest first), then cleared ones (most recent first). Up to 500 |
 | `GET /metrics` | Prometheus text format (see DESIGN.md §8) |
 | `GET /api/config/sites` | Raw `sites.yaml`. The `ETag` header is the file's SHA-256 hash |
 | `GET /api/config/sites/{name}` | One site as YAML, exactly as written in the file |
