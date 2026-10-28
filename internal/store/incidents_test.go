@@ -21,8 +21,19 @@ func ev(node, sev string, at time.Duration) Event {
 		Site: "shop", Check: "availability", Key: "site:shop|availability", Message: "DOWN: HTTP 503"}
 }
 
+func open(t *testing.T, dir string) *Store {
+	t.Helper()
+	s, err := Open(dir, Options{HistoryPerCheck: 10, MaxEvents: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
 func TestIncidentLifecycle(t *testing.T) {
-	s := New(t.TempDir(), 10, 100)
+	dir := t.TempDir()
+	s := open(t, dir)
 
 	if !s.AddEvent(ev("idc", "CRIT", 0)) {
 		t.Fatal("first alert must be stored")
@@ -80,11 +91,9 @@ func TestIncidentLifecycle(t *testing.T) {
 		t.Fatal("severity change must be stored as a transition")
 	}
 
-	// incidents survive a restart (snapshot)
-	if err := s.Save(); err != nil {
-		t.Fatal(err)
-	}
-	s2 := New(strings.TrimSuffix(s.path, "/results.json"), 10, 100)
+	// incidents survive a restart (database)
+	s.Close()
+	s2 := open(t, dir)
 	if got := s2.Incidents(10); len(got) != 1 || got[0].Reappeared != 1 || s2.IncidentLevel("site:shop|availability") != "WARN" {
 		t.Fatalf("incident not restored: %+v", got)
 	}
@@ -94,7 +103,7 @@ func TestIncidentLifecycle(t *testing.T) {
 }
 
 func TestUnkeyedEventsUnchanged(t *testing.T) {
-	s := New(t.TempDir(), 10, 100)
+	s := open(t, t.TempDir())
 	e := Event{ID: "a", Time: t0, Kind: "INFO", Severity: "OK", Message: "started"}
 	if !s.AddEvent(e) || s.AddEvent(e) {
 		t.Fatal("unkeyed events: stored once, de-duplicated by ID only")

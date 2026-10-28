@@ -19,44 +19,46 @@
 
 ## 2. Server sizing (memory, CPU, disk)
 
-All checks run in one Go process, so memory is mostly the stored result
-history. Measured values:
+Results, statistics, events and incidents are stored in an embedded
+**SQLite database** (`/data/sitemonitor.db`), not in memory. Memory
+therefore stays small and constant; the database grows with the number
+of sites and then stays at a fixed size, because of the retention
+settings. Measured values:
 
 | Measurement | Value |
 |---|---|
-| Idle process (demo, 4 sites) | ~9 MB RSS |
+| Monitor process (demo, 4 sites) | ~10 MB RSS |
 | Witness | ~4 MB RSS |
-| One stored result in memory | ~0.6 KB |
-| One site with 4 checks × 200 results | ~0.5 MB |
-| 100 sites (80k results) | ~48 MB heap |
-| 500 sites (400k results) | ~240 MB heap |
-| 1,000 sites (800k results) | ~480 MB heap |
+| Database write rate (result + counters + buckets, one transaction each) | ~2,000 results/s (1,000 sites × 4 checks per minute needs ~67/s) |
+| Raw result on disk (incl. indexes) | ~310 bytes |
+| Statistics + KPI summary query, 400 checks | ~8 ms |
 
-**Both servers hold the history for all sites** because results are
-replicated. While the 30-second disk snapshot is being written, memory
-briefly needs up to about 1.8× the heap. During a takeover, the extra
-work is goroutines and sockets (a few MB), not more history.
+**Both servers hold the data for all sites** because results are
+replicated.
 
-**Formula:**
+**Database size** (constant after the retention windows fill):
 
 ```
-RAM ≈ 50 MB + sites × checks_per_site × history_per_check × 0.6 KB × 2 (snapshot headroom)
+disk ≈ sites × checks × ( history_per_check × 310 B      raw results
+                        + 400 days        × ~70 B        daily buckets
+                        + 168 hours       × ~70 B )      hourly buckets
 ```
 
 **Recommended sizes** (per server; both servers sized the same so either
 can carry both regions):
 
-| Websites | `history_per_check` | RAM limit | `GOMEMLIMIT` | vCPU | Disk (`/data`) |
-|---|---|---|---|---|---|
-| ≤ 100 | 200 | 256 MB | 200MiB | 0.5 | 100 MB |
-| ≤ 500 | 200 | 1 GB | 800MiB | 1 | 500 MB |
-| ≤ 1,000 | 200 | 2 GB | 1600MiB | 1–2 | 1 GB |
-| ≤ 1,000 | 50 | 512 MB | 400MiB | 1–2 | 300 MB |
+| Websites | RAM limit | `GOMEMLIMIT` | vCPU | Disk (`/data`) |
+|---|---|---|---|---|
+| ≤ 100 | 256 MB | 200MiB | 0.5 | ~50 MB (allow 200 MB) |
+| ≤ 500 | 256 MB | 200MiB | 1 | ~200 MB (allow 1 GB) |
+| ≤ 1,000 | 512 MB | 400MiB | 1–2 | ~400 MB (allow 2 GB) |
 
-- Set `GOMEMLIMIT` to about 80 % of the container or VM memory limit, so
-  the Go garbage collector works harder before it hits that limit.
-- To reduce memory, lower `limits.history_per_check` in `node.yaml`.
-  Long-term history belongs in Prometheus (see section 7).
+- Set `GOMEMLIMIT` to about 80 % of the container or VM memory limit.
+- Use a local disk (SSD) for `/data`. Don't put the database on a
+  network share (SMB/NFS): SQLite needs reliable file locking.
+- `limits.history_per_check` (raw results), `limits.hourly_stats_retention`
+  and `limits.daily_stats_retention` control the database size. Lifetime
+  counters are never pruned.
 - CPU usage is very low; the demo idles at about 0.05 %. The TLS check
   is the most expensive because each run makes 5 handshakes, which is
   why it runs daily by default.
@@ -129,7 +131,8 @@ peer:   { id: monitor-fc-01, name: "FC Monitor - Chennai", region: FC,
           url: https://monitor-fc-01.fc.example.com:8443,
           handback_stable_for: 2m }                  # demo uses 1m; production 2–5m
 witness: { url: https://witness.example.net:9443, required_for_takeover: true }
-limits:  { workers: 20, per_host_limit: 2, queue_size: 500, history_per_check: 200 }   # see sizing table
+limits:  { workers: 20, per_host_limit: 2, queue_size: 500, history_per_check: 200,
+           hourly_stats_retention: 168h, daily_stats_retention: 9600h }   # see sizing table
 auth:    { providers: [ldap, local] }                # see docs/AUTHENTICATION.md
 ```
 
@@ -259,7 +262,8 @@ Expose port 8443 to the other cluster through an internal load balancer.
 4. **Upgrades:** do one server at a time. Wait until both show
    `NORMAL · peer HEALTHY` before upgrading the second. A graceful stop
    (SIGTERM) releases the server's witness leases, finishes in-flight
-   checks, and saves a snapshot.
+   checks, and closes the database cleanly. Every result is committed as
+   it arrives, so even a hard kill loses at most the in-flight checks.
 
 ## 7. Monitoring the monitor
 
@@ -342,7 +346,7 @@ Cronitor), or your Prometheus, at both `/healthz` endpoints.
 | **Network split between IDC and FC** | Each server keeps its own region, because the witness refuses takeover. The event reads "peer unreachable … still holds the lease (network split?)". Fix the link |
 | **Server stuck in STANDBY** | The peer still owns its region. Check the peer's dashboard: it hands back after `handback_stable_for` once it sees this server as HEALTHY. Look at `last_error` on both servers (certificate CN mismatch or a firewall are the usual causes) |
 | **Reset ownership state** | Stop the server, delete `/data/ownership.yaml`, start it again. It re-decides ownership from heartbeats and leases |
-| **Backup** | Optional. `/data/results.json` is a cache that is rebuilt from new checks. Back up `node.yaml`, `sites.yaml`, and the certificates or keys |
+| **Backup** | Back up `/data/sitemonitor.db` (counters, uptime history, incidents, events). Take a consistent copy while running with `sqlite3 /data/sitemonitor.db ".backup /backup/sitemonitor.db"`, or stop the server and copy the file. Losing it is not fatal: the peer still has a full copy of new data. Back up `node.yaml`, `sites.yaml`, and the certificates or keys |
 
 ## 9. Troubleshooting
 
@@ -355,7 +359,8 @@ Cronitor), or your Prometheus, at both `/healthz` endpoints.
 | `takeover … blocked: … still holds the … lease` | The servers can't reach each other, but the witness still sees the peer renewing | This is correct split-brain behavior. Fix the IDC↔FC link |
 | Checks show `timed out` | The site is slow or the timeout is too tight | Raise `timeout` for that site |
 | `monitor_checks_dropped_total` increasing | The queue is full | Raise `workers` or `queue_size`, or lengthen intervals |
-| Container OOM-killed | History too large for the memory limit | Use the sizing table: lower `history_per_check` or raise the memory limit |
+| Container OOM-killed | Memory limit too small | Use the sizing table (history is on disk, so 256–512 MB is enough) |
+| `database: … disk I/O error` / `database is locked` | `/data` on a network share, or the disk is full | Use a local volume; free disk space (or lower the retention settings) |
 | `auth: provider local needs at least one auth.local.users entry` / `password_hash must be a bcrypt hash` | `auth:` section incomplete | Add users with `monitor hash-password`, or switch to `ldap` |
 | Config API returns `config directory must be writable` | Config mounted read-only or owned by root | Mount the directory (not single files) read-write; `chown -R 65532:65532` |
 | Login fails for AD users | See [AUTHENTICATION.md §2.5](AUTHENTICATION.md#25-troubleshooting) | |

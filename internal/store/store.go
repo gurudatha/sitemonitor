@@ -1,29 +1,38 @@
-// Package store keeps check results and events in memory, snapshots them to
-// disk, and de-duplicates results that arrive twice through replication.
+// Package store persists check results, per-check statistics, events and
+// incidents in an embedded SQLite database (one file per server, in data_dir).
+//
+// Statistics are maintained incrementally: every result (success or failure)
+// updates the check's counters, its current state and its hourly/daily
+// buckets in the same transaction. The dashboard and /metrics only read these
+// stored values; nothing is recomputed from raw history on a request.
 package store
 
 import (
-	"encoding/json"
+	"database/sql"
+	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 	"time"
 
-	"sitemonitor/internal/checks"
+	_ "modernc.org/sqlite" // pure-Go driver (no CGO), registers "sqlite"
 )
 
-const (
-	defaultHistory   = 200
-	defaultMaxEvents = 500
-)
+// Options bound what is kept in the database (from node.yaml limits).
+type Options struct {
+	HistoryPerCheck int           // raw results kept per site/check
+	MaxEvents       int           // events kept
+	HourlyRetention time.Duration // hourly statistics kept (24h uptime needs >= 25h)
+	DailyRetention  time.Duration // daily statistics kept (30d uptime, yearly reports)
+}
 
 // Event is something a human should see: an alert, a recovery, a failover.
 type Event struct {
 	ID       string    `json:"id"`
 	Time     time.Time `json:"time"`
 	Node     string    `json:"node"`
-	Kind     string    `json:"kind"`     // ALERT | RECOVERY | FAILOVER | HANDBACK | PEER | CONFIG | INFO
+	Kind     string    `json:"kind"`     // ALERT | RECOVERY | FAILOVER | HANDBACK | PEER | CONFIG | INFO | AUTH
 	Severity string    `json:"severity"` // OK | WARN | CRIT
 	Site     string    `json:"site,omitempty"`
 	Check    string    `json:"check,omitempty"`
@@ -35,179 +44,197 @@ type Event struct {
 }
 
 type Store struct {
-	mu        sync.RWMutex
-	history   map[string][]checks.Result // key: site|check, oldest first
-	events    []Event
-	seen      map[string]bool // event IDs
-	incidents map[string]*Incident
-	path      string
-	keep      int // results kept per site/check (~0.6 KB each in memory)
-	maxEv     int // events kept
+	db      *sql.DB
+	opt     Options
+	path    string
+	writeMu sync.Mutex // SQLite has one writer; serialise writes instead of retrying on SQLITE_BUSY
 }
 
-// New creates a store bounded by limits.history_per_check and limits.max_events.
-func New(dataDir string, historyPerCheck, maxEvents int) *Store {
-	if historyPerCheck <= 0 {
-		historyPerCheck = defaultHistory
+const schema = `
+CREATE TABLE IF NOT EXISTS results (
+	id          TEXT PRIMARY KEY,
+	site        TEXT NOT NULL,
+	check_name  TEXT NOT NULL,
+	region      TEXT,
+	node        TEXT,
+	node_region TEXT,
+	status      TEXT NOT NULL,
+	message     TEXT,
+	latency_ms  INTEGER,
+	details     TEXT,
+	time_ms     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS results_site_check_time ON results(site, check_name, time_ms);
+
+-- One row per site/check: current state + lifetime counters, updated on every result.
+CREATE TABLE IF NOT EXISTS check_state (
+	site                 TEXT NOT NULL,
+	check_name           TEXT NOT NULL,
+	region               TEXT,
+	status               TEXT,
+	message              TEXT,
+	latency_ms           INTEGER,
+	details              TEXT,
+	node                 TEXT,
+	node_region          TEXT,
+	result_id            TEXT,
+	time_ms              INTEGER,
+	total                INTEGER NOT NULL DEFAULT 0,
+	ok                   INTEGER NOT NULL DEFAULT 0,
+	warn                 INTEGER NOT NULL DEFAULT 0,
+	crit                 INTEGER NOT NULL DEFAULT 0,
+	latency_sum          INTEGER NOT NULL DEFAULT 0,
+	latency_max          INTEGER NOT NULL DEFAULT 0,
+	consecutive_failures INTEGER NOT NULL DEFAULT 0,
+	last_success_ms      INTEGER,
+	last_failure_ms      INTEGER,
+	first_seen_ms        INTEGER,
+	cert_days_left       INTEGER,
+	PRIMARY KEY (site, check_name)
+);
+
+-- Pre-aggregated buckets for uptime windows (24h from hourly, 30d/yearly from daily).
+CREATE TABLE IF NOT EXISTS check_hourly (
+	site        TEXT NOT NULL,
+	check_name  TEXT NOT NULL,
+	hour        INTEGER NOT NULL, -- unix hour (time_ms / 3600000)
+	total       INTEGER NOT NULL DEFAULT 0,
+	ok          INTEGER NOT NULL DEFAULT 0,
+	warn        INTEGER NOT NULL DEFAULT 0,
+	crit        INTEGER NOT NULL DEFAULT 0,
+	latency_sum INTEGER NOT NULL DEFAULT 0,
+	latency_max INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (site, check_name, hour)
+);
+CREATE TABLE IF NOT EXISTS check_daily (
+	site        TEXT NOT NULL,
+	check_name  TEXT NOT NULL,
+	day         INTEGER NOT NULL, -- unix day (time_ms / 86400000), UTC
+	total       INTEGER NOT NULL DEFAULT 0,
+	ok          INTEGER NOT NULL DEFAULT 0,
+	warn        INTEGER NOT NULL DEFAULT 0,
+	crit        INTEGER NOT NULL DEFAULT 0,
+	latency_sum INTEGER NOT NULL DEFAULT 0,
+	latency_max INTEGER NOT NULL DEFAULT 0,
+	PRIMARY KEY (site, check_name, day)
+);
+
+CREATE TABLE IF NOT EXISTS events (
+	id         TEXT PRIMARY KEY,
+	time_ms    INTEGER NOT NULL,
+	node       TEXT,
+	kind       TEXT,
+	severity   TEXT,
+	site       TEXT,
+	check_name TEXT,
+	key        TEXT,
+	message    TEXT
+);
+CREATE INDEX IF NOT EXISTS events_time ON events(time_ms);
+
+CREATE TABLE IF NOT EXISTS incidents (
+	key           TEXT PRIMARY KEY,
+	status        TEXT NOT NULL,
+	severity      TEXT NOT NULL,
+	first_seen_ms INTEGER NOT NULL,
+	cleared_at_ms INTEGER,
+	data          TEXT NOT NULL -- JSON of Incident (history, seen_by, counters)
+);
+
+CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
+`
+
+// Open opens (or creates) <dataDir>/sitemonitor.db.
+func Open(dataDir string, opt Options) (*Store, error) {
+	if opt.HistoryPerCheck <= 0 {
+		opt.HistoryPerCheck = 200
 	}
-	if maxEvents <= 0 {
-		maxEvents = defaultMaxEvents
+	if opt.MaxEvents <= 0 {
+		opt.MaxEvents = 500
 	}
-	s := &Store{history: map[string][]checks.Result{}, seen: map[string]bool{}, incidents: map[string]*Incident{}, path: filepath.Join(dataDir, "results.json"), keep: historyPerCheck, maxEv: maxEvents}
-	s.load()
-	return s
+	if opt.HourlyRetention < 25*time.Hour {
+		opt.HourlyRetention = 7 * 24 * time.Hour
+	}
+	if opt.DailyRetention < 31*24*time.Hour {
+		opt.DailyRetention = 400 * 24 * time.Hour
+	}
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(dataDir, "sitemonitor.db")
+	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=temp_store(MEMORY)" // read-only root fs: no temp files
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(8) // WAL: many readers, one writer (writeMu)
+	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("database schema: %w", err)
+	}
+	s := &Store{db: db, opt: opt, path: path}
+	if err := s.importLegacy(dataDir); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("import results.json: %w", err)
+	}
+	return s, nil
 }
 
-func key(site, check string) string { return site + "|" + check }
+func (s *Store) Close() error { return s.db.Close() }
 
-// AddResult stores a result; returns false if it was already present.
-func (s *Store) AddResult(r checks.Result) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	k := key(r.Site, r.Check)
-	h := s.history[k]
-	for i := len(h) - 1; i >= 0; i-- {
-		if h[i].ID == r.ID {
-			return false
-		}
+// Path is the database file.
+func (s *Store) Path() string { return s.path }
+
+func logErr(op string, err error) { slog.Error("database", "op", op, "err", err) }
+
+func ms(t time.Time) int64     { return t.UnixMilli() }
+func fromMs(v int64) time.Time { return time.UnixMilli(v).UTC() }
+func nullMs(v sql.NullInt64) time.Time {
+	if !v.Valid || v.Int64 == 0 {
+		return time.Time{}
 	}
-	// insert keeping time order (replicated results can arrive late)
-	i := sort.Search(len(h), func(i int) bool { return h[i].Time.After(r.Time) })
-	h = append(h, checks.Result{})
-	copy(h[i+1:], h[i:])
-	h[i] = r
-	if len(h) > s.keep {
-		h = h[len(h)-s.keep:]
-	}
-	s.history[k] = h
-	return true
+	return fromMs(v.Int64)
 }
 
-// AddEvent stores an event. It returns false for an event already stored
-// (replication) or a duplicate of an open incident; the caller then must not
-// notify or replicate it.
-func (s *Store) AddEvent(e Event) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.seen[e.ID] {
-		return false
+// write runs fn in a write transaction.
+func (s *Store) write(fn func(tx *sql.Tx) error) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
 	}
-	s.seen[e.ID] = true
-	if e.Key != "" && !s.trackLocked(&e) {
-		return false
+	if err := fn(tx); err != nil {
+		tx.Rollback()
+		return err
 	}
-	i := sort.Search(len(s.events), func(i int) bool { return s.events[i].Time.After(e.Time) })
-	s.events = append(s.events, Event{})
-	copy(s.events[i+1:], s.events[i:])
-	s.events[i] = e
-	if len(s.events) > s.maxEv {
-		for _, old := range s.events[:len(s.events)-s.maxEv] {
-			delete(s.seen, old.ID)
-		}
-		s.events = s.events[len(s.events)-s.maxEv:]
-	}
-	return true
+	return tx.Commit()
 }
 
-// Latest returns the newest result of every site/check, from whichever node ran it.
-func (s *Store) Latest() []checks.Result {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]checks.Result, 0, len(s.history))
-	for _, h := range s.history {
-		if len(h) > 0 {
-			out = append(out, h[len(h)-1])
+// Maintain enforces retention: raw results per check, stats buckets, events
+// and cleared incidents. Run it periodically (limits.db_maintenance_interval).
+func (s *Store) Maintain(now time.Time) error {
+	return s.write(func(tx *sql.Tx) error {
+		// keep the newest HistoryPerCheck raw results of every site/check
+		if _, err := tx.Exec(`
+			DELETE FROM results WHERE id IN (
+				SELECT id FROM (
+					SELECT id, ROW_NUMBER() OVER (PARTITION BY site, check_name ORDER BY time_ms DESC) AS rn FROM results
+				) WHERE rn > ?)`, s.opt.HistoryPerCheck); err != nil {
+			return err
 		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Site != out[j].Site {
-			return out[i].Site < out[j].Site
+		if _, err := tx.Exec(`DELETE FROM check_hourly WHERE hour < ?`, hourBucket(now, s.opt.HourlyRetention)); err != nil {
+			return err
 		}
-		return out[i].Check < out[j].Check
+		if _, err := tx.Exec(`DELETE FROM check_daily WHERE day < ?`, dayBucket(now, s.opt.DailyRetention)); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY time_ms DESC LIMIT ?)`, s.opt.MaxEvents); err != nil {
+			return err
+		}
+		_, err := tx.Exec(`DELETE FROM incidents WHERE key IN (
+			SELECT key FROM incidents WHERE status = 'CLEARED' ORDER BY cleared_at_ms ASC
+			LIMIT MAX(0, (SELECT COUNT(*) FROM incidents) - ?))`, maxIncidents)
+		return err
 	})
-	return out
-}
-
-// History returns up to n most recent results for a site/check.
-func (s *Store) History(site, check string, n int) []checks.Result {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	h := s.history[key(site, check)]
-	if len(h) > n {
-		h = h[len(h)-n:]
-	}
-	return append([]checks.Result(nil), h...)
-}
-
-// Events returns the newest n events, newest first.
-func (s *Store) Events(n int) []Event {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	out := make([]Event, 0, n)
-	for i := len(s.events) - 1; i >= 0 && len(out) < n; i-- {
-		out = append(out, s.events[i])
-	}
-	return out
-}
-
-// Uptime returns the share of OK/WARN availability results in the stored window.
-func (s *Store) Uptime(site string) (float64, int) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	h := s.history[key(site, "availability")]
-	if len(h) == 0 {
-		return 0, 0
-	}
-	up := 0
-	for _, r := range h {
-		if r.Status != checks.StatusCrit {
-			up++
-		}
-	}
-	return float64(up) / float64(len(h)) * 100, len(h)
-}
-
-type snapshot struct {
-	History   map[string][]checks.Result `json:"history"`
-	Events    []Event                    `json:"events"`
-	Incidents map[string]*Incident       `json:"incidents"`
-}
-
-// Save writes a snapshot atomically (write temp file, then rename).
-func (s *Store) Save() error {
-	s.mu.RLock()
-	b, err := json.Marshal(snapshot{History: s.history, Events: s.events, Incidents: s.incidents})
-	s.mu.RUnlock()
-	if err != nil {
-		return err
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
-}
-
-func (s *Store) load() {
-	b, err := os.ReadFile(s.path)
-	if err != nil {
-		return
-	}
-	var snap snapshot
-	if json.Unmarshal(b, &snap) != nil {
-		return
-	}
-	for k, h := range snap.History {
-		if len(h) > s.keep {
-			h = h[len(h)-s.keep:]
-		}
-		s.history[k] = h
-	}
-	s.events = snap.Events
-	for _, e := range s.events {
-		s.seen[e.ID] = true
-	}
-	if snap.Incidents != nil {
-		s.incidents = snap.Incidents
-	}
 }

@@ -34,30 +34,24 @@ const ago = (t) => {
 };
 
 function worst(site) {
-  const rank = { OK: 0, WARN: 1, CRIT: 2 };
-  let w = null;
-  for (const r of Object.values(site.results)) if (w === null || rank[r.status] > rank[w]) w = r.status;
-  return w;
+  return site.status || null; // stored by the server (worst check status)
 }
 
+// KPI values come from the database summary (d.summary); nothing is counted here.
 function renderKPIs(d) {
-  const sites = d.sites;
-  const counts = { OK: 0, WARN: 0, CRIT: 0 };
-  let certs30 = 0;
-  for (const s of sites) {
-    const w = worst(s);
-    if (w) counts[w]++;
-    const c = s.results.cert;
-    if (c && c.details && Number(c.details.days_left) <= 30) certs30++;
-  }
-  const k = (label, value, cls) => el("div", { cls: "kpi " + (cls || "") }, el("div", { cls: "v", text: String(value) }), el("div", { cls: "l", text: label }));
+  const m = d.summary;
+  const pctTxt = (v) => (v === null || v === undefined ? "—" : v.toFixed(2) + "%");
+  const k = (label, value, cls, title) => el("div", { cls: "kpi " + (cls || ""), title: title || "" }, el("div", { cls: "v", text: String(value) }), el("div", { cls: "l", text: label }));
   $("kpis").replaceChildren(
-    k("Websites", sites.length),
-    k("Healthy", counts.OK, "ok"),
-    k("Warning", counts.WARN, counts.WARN ? "warn" : ""),
-    k("Critical", counts.CRIT, counts.CRIT ? "crit" : ""),
-    k("Certs ≤ 30 days", certs30, certs30 ? "warn" : ""),
-    k("Checks run", d.scheduler.completed),
+    k("Websites", m.websites, "", m.pending ? `${m.pending} without results yet` : ""),
+    k("Healthy", m.healthy, "ok"),
+    k("Warning", m.warning, m.warning ? "warn" : ""),
+    k("Critical", m.critical, m.critical ? "crit" : ""),
+    k(`Certs ≤ ${m.cert_warn_days} days`, m.certs_expiring, m.certs_expiring ? "warn" : ""),
+    k("Availability 24h", pctTxt(m.availability_24h), m.availability_24h !== null && m.availability_24h < 99 ? "warn" : "ok"),
+    k("Requests 24h", m.requests_24h, "", `${m.failures_24h} failed`),
+    k("Failed 24h", m.failures_24h, m.failures_24h ? "crit" : ""),
+    k("Open incidents", m.open_incidents, m.critical_incidents ? "crit" : m.open_incidents ? "warn" : "", `${m.critical_incidents} critical`),
   );
 }
 
@@ -106,6 +100,16 @@ function checkCell(site, check) {
   return td;
 }
 
+// Uptime: stored 24h/30d values and counters of the availability check.
+function uptimeCell(s) {
+  const st = (s.stats || {}).availability;
+  if (!st || st.uptime_24h === null) return el("td", { text: "—" });
+  const td = el("td", { title: `24h: ${st.requests_24h} requests, ${st.failures_24h} failed\n30d: ${st.uptime_30d === null ? "—" : st.uptime_30d.toFixed(2) + "%"} of ${st.requests_30d}\nall time: ${st.ok} ok · ${st.warn} warn · ${st.crit} failed` },
+    el("span", { text: st.uptime_24h.toFixed(1) + "%" }),
+    el("span", { cls: "msg", text: `${st.requests_24h} req · ${st.failures_24h} failed` }));
+  return td;
+}
+
 function renderSites(d) {
   const fr = $("f-region").value, fs = $("f-status").value;
   const rows = [];
@@ -120,7 +124,7 @@ function renderSites(d) {
       el("td", {}, badge("INFO", s.region)),
       el("td", { cls: failover ? "failover" : "", text: failover ? fromTxt + " (failover)" : fromTxt }),
       ...CHECKS.map((c) => checkCell(s, c)),
-      el("td", { text: s.samples ? s.uptime.toFixed(1) + "%" : "—" }),
+      uptimeCell(s),
     );
     rows.push(tr);
   }
@@ -214,9 +218,19 @@ function showIncident(inc) {
 
 function showDetail(site, r) {
   $("detail-title").textContent = `${site.name} · ${r.check}`;
+  const st = (site.stats || {})[r.check];
+  const pc = (v) => (v === null || v === undefined ? "—" : v.toFixed(2) + "%");
   const pairs = [
     ["Status", r.status], ["Message", r.message], ["Checked by", `${r.node} (${r.node_region})`],
     ["When", `${fmtTime(r.time)} (${ago(r.time)})`], ["Latency", r.latency_ms + " ms"],
+    ...(st ? [
+      ["Requests (all time)", `${st.total}: ${st.ok} ok · ${st.warn} warn · ${st.crit} failed`],
+      ["Uptime 24h / 30d", `${pc(st.uptime_24h)} (${st.requests_24h} req) / ${pc(st.uptime_30d)} (${st.requests_30d} req)`],
+      ["Latency avg / max", `${Math.round(st.avg_latency_ms)} ms / ${st.max_latency_ms} ms`],
+      ["Consecutive failures", String(st.consecutive_failures)],
+      ["Last success", st.last_success ? fmtTime(st.last_success) : "never"],
+      ["Last failure", st.last_failure ? fmtTime(st.last_failure) : "never"],
+    ] : []),
     ...Object.entries(r.details || {}).sort(),
   ];
   $("detail-body").replaceChildren(...pairs.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: String(v) })]));

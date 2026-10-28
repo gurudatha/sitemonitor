@@ -45,7 +45,7 @@ providers (`auth.providers`: local users or Active Directory). See
 | Method & path | Description |
 |---|---|
 | `GET /api/me` | Current user `{username, display_name, role, provider}`, `csrf_token`, server name |
-| `GET /api/status` | Cluster state (server and peer **id + name**, mode, owned regions, epoch, heartbeat, config match, replication, witness), scheduler stats, config version, every site with its latest result per check and uptime, last 100 events, up to 100 incidents |
+| `GET /api/status` | Cluster state (server and peer **id + name**, mode, owned regions, epoch, heartbeat, config match, replication, witness), scheduler stats, config version, `summary` (KPI tiles), every site with its stored `status`, current result per check (`results`) and stored counters per check (`stats`: total/ok/warn/crit, latency avg/max, consecutive failures, last success/failure, 24 h and 30 d requests and uptime), last 100 events, up to 100 incidents. All values are read from the database |
 | `GET /api/history?site=<name>&check=<check>` | Last 100 results of one site/check |
 | `GET /api/limits` | Effective `node`/`peer` identity and names, all `limits`, auth summary |
 | `GET /api/incidents[?status=open\|cleared]` | Grouped problems (see DESIGN.md §6.1): `first_seen` (oldest report), `last_seen`, `occurrences`, `cleared`, `reappeared`, `seen_by`, and the `history` of RAISED / SEVERITY / CLEARED / REAPPEARED transitions. Open incidents come first (oldest first), then cleared ones (most recent first). Up to 500 |
@@ -100,7 +100,7 @@ When the peer couldn't be reached, the response has
 | `GET /api/config/node` | — | Raw `node.yaml`. `${VAR}` references are returned **unexpanded**, so secrets are never exposed |
 | `POST /api/config/node/validate` | Full `node.yaml` | Dry run |
 | `PUT /api/config/node[?restart=true]` | Full `node.yaml` | Validate, back up and replace. Returns `restart_required: true`. With `?restart=true`, the server restarts gracefully and its supervisor (Docker or systemd) starts it again |
-| `POST /api/admin/restart` | — | Graceful restart: finishes in-flight checks, releases witness leases, saves the snapshot, exits |
+| `POST /api/admin/restart` | — | Graceful restart: finishes in-flight checks, releases witness leases, closes the database, exits |
 
 `node.id`, `node.region`, `peer.id`, `peer.region` and `tls.*` can't be
 changed through the API (409); they are tied to certificates and

@@ -104,7 +104,10 @@ func (s *Server) PeerHandler() http.Handler {
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
-		s.Store.AddResult(*res)
+		// a verify check is a real request: count it here and on the peer
+		if s.Store.AddResult(*res) {
+			s.Cluster.EnqueueResult(*res)
+		}
 		writeJSON(w, res)
 	})
 	mux.HandleFunc("GET /peer/config/sites", s.peerGetSites)
@@ -234,15 +237,15 @@ func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 // ---------- read APIs ----------
 
 type siteView struct {
-	Name        string                   `json:"name"`
-	Region      string                   `json:"region"`
-	URL         string                   `json:"url"`
-	Owner       string                   `json:"owner"`
-	Criticality string                   `json:"criticality"`
-	Checks      []string                 `json:"checks"`
-	Uptime      float64                  `json:"uptime"`
-	Samples     int                      `json:"samples"`
-	Results     map[string]checks.Result `json:"results"`
+	Name        string                      `json:"name"`
+	Region      string                      `json:"region"`
+	URL         string                      `json:"url"`
+	Owner       string                      `json:"owner"`
+	Criticality string                      `json:"criticality"`
+	Checks      []string                    `json:"checks"`
+	Status      string                      `json:"status"`  // worst stored check status; "" = pending
+	Results     map[string]checks.Result    `json:"results"` // stored current result per check
+	Stats       map[string]store.CheckStats `json:"stats"`   // stored counters per check
 }
 
 func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
@@ -254,15 +257,28 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 		}
 		latest[r.Site][r.Check] = r
 	}
+	now := time.Now()
+	stats := map[string]map[string]store.CheckStats{}
+	for _, c := range s.Store.Stats(now) {
+		if stats[c.Site] == nil {
+			stats[c.Site] = map[string]store.CheckStats{}
+		}
+		stats[c.Site][c.Check] = c
+	}
+	worst := s.Store.WorstBySite()
+	names := make([]string, 0, len(sites.Sites))
 	views := make([]siteView, 0, len(sites.Sites))
 	for _, st := range sites.Sites {
-		up, n := s.Store.Uptime(st.Name)
-		res := latest[st.Name]
+		names = append(names, st.Name)
+		res, sts := latest[st.Name], stats[st.Name]
 		if res == nil {
 			res = map[string]checks.Result{}
 		}
+		if sts == nil {
+			sts = map[string]store.CheckStats{}
+		}
 		views = append(views, siteView{Name: st.Name, Region: st.Region, URL: st.URL, Owner: st.Owner,
-			Criticality: st.Criticality, Checks: st.Checks, Uptime: up, Samples: n, Results: res})
+			Criticality: st.Criticality, Checks: st.Checks, Status: worst[st.Name], Results: res, Stats: sts})
 	}
 	sort.Slice(views, func(i, j int) bool {
 		if views[i].Region != views[j].Region {
@@ -275,6 +291,7 @@ func (s *Server) status(w http.ResponseWriter, _ *http.Request) {
 		"cluster":   s.Cluster.Snapshot(),
 		"scheduler": s.Sched.Stats(),
 		"config":    map[string]string{"version": sites.Version, "hash": sites.Hash},
+		"summary":   s.Store.Summary(names, sites.Defaults.CertWarnDays, now),
 		"sites":     views,
 		"events":    s.Store.Events(100),
 		"incidents": s.Store.Incidents(100),

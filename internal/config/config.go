@@ -84,24 +84,27 @@ type MonitorConf struct {
 
 // Limits bounds every pool, queue and buffer in the process.
 type Limits struct {
-	Workers              int           `yaml:"workers"`                 // goroutines executing checks
-	PerHostLimit         int           `yaml:"per_host_limit"`          // concurrent connections to one site
-	QueueSize            int           `yaml:"queue_size"`              // pending check jobs
-	VerifyConcurrency    int           `yaml:"verify_concurrency"`      // concurrent cross-region verify requests served
-	MaxSites             int           `yaml:"max_sites"`               // reject sites.yaml with more sites
-	HistoryPerCheck      int           `yaml:"history_per_check"`       // results kept per site/check (~0.6 KB each)
-	MaxEvents            int           `yaml:"max_events"`              // events kept
-	MaxResponseBodyKB    int64         `yaml:"max_response_body_kb"`    // bytes read from a monitored site
-	MaxRedirects         int           `yaml:"max_redirects"`           // redirects followed by checks
-	ReplicationQueue     int           `yaml:"replication_queue"`       // results+events waiting for the peer
-	ReplicationBatch     int           `yaml:"replication_batch"`       // items per push
-	ReplicationInterval  time.Duration `yaml:"replication_interval"`    // push period
-	MaxReplicationBodyMB int64         `yaml:"max_replication_body_mb"` // accepted from the peer
-	MaxAPIBodyKB         int64         `yaml:"max_api_body_kb"`         // login + config API request bodies
-	MaxConfigSizeKB      int64         `yaml:"max_config_size_kb"`      // sites.yaml / node.yaml size
-	SnapshotInterval     time.Duration `yaml:"snapshot_interval"`       // results.json write period
-	HTTPReadTimeout      time.Duration `yaml:"http_read_timeout"`
-	HTTPWriteTimeout     time.Duration `yaml:"http_write_timeout"`
+	Workers               int           `yaml:"workers"`                 // goroutines executing checks
+	PerHostLimit          int           `yaml:"per_host_limit"`          // concurrent connections to one site
+	QueueSize             int           `yaml:"queue_size"`              // pending check jobs
+	VerifyConcurrency     int           `yaml:"verify_concurrency"`      // concurrent cross-region verify requests served
+	MaxSites              int           `yaml:"max_sites"`               // reject sites.yaml with more sites
+	HistoryPerCheck       int           `yaml:"history_per_check"`       // results kept per site/check (~0.6 KB each)
+	MaxEvents             int           `yaml:"max_events"`              // events kept
+	MaxResponseBodyKB     int64         `yaml:"max_response_body_kb"`    // bytes read from a monitored site
+	MaxRedirects          int           `yaml:"max_redirects"`           // redirects followed by checks
+	ReplicationQueue      int           `yaml:"replication_queue"`       // results+events waiting for the peer
+	ReplicationBatch      int           `yaml:"replication_batch"`       // items per push
+	ReplicationInterval   time.Duration `yaml:"replication_interval"`    // push period
+	MaxReplicationBodyMB  int64         `yaml:"max_replication_body_mb"` // accepted from the peer
+	MaxAPIBodyKB          int64         `yaml:"max_api_body_kb"`         // login + config API request bodies
+	MaxConfigSizeKB       int64         `yaml:"max_config_size_kb"`      // sites.yaml / node.yaml size
+	SnapshotInterval      time.Duration `yaml:"snapshot_interval"`       // deprecated: used as db_maintenance_interval if that is unset
+	DBMaintenanceInterval time.Duration `yaml:"db_maintenance_interval"` // retention clean-up of the database
+	HourlyStatsRetention  time.Duration `yaml:"hourly_stats_retention"`  // hourly buckets kept (24h uptime)
+	DailyStatsRetention   time.Duration `yaml:"daily_stats_retention"`   // daily buckets kept (30d uptime, yearly reports)
+	HTTPReadTimeout       time.Duration `yaml:"http_read_timeout"`
+	HTTPWriteTimeout      time.Duration `yaml:"http_write_timeout"`
 }
 
 // AuthConfig selects how users of the dashboard and APIs are authenticated.
@@ -229,7 +232,10 @@ func (n *Node) applyDefaults() {
 	setDefault(&l.MaxReplicationBodyMB, 32)
 	setDefault(&l.MaxAPIBodyKB, 1024)
 	setDefault(&l.MaxConfigSizeKB, 1024)
-	setDefault(&l.SnapshotInterval, 30*time.Second)
+	setDefault(&l.SnapshotInterval, 5*time.Minute)
+	setDefault(&l.DBMaintenanceInterval, l.SnapshotInterval)
+	setDefault(&l.HourlyStatsRetention, 7*24*time.Hour)
+	setDefault(&l.DailyStatsRetention, 400*24*time.Hour)
 	setDefault(&l.HTTPReadTimeout, 30*time.Second)
 	setDefault(&l.HTTPWriteTimeout, 60*time.Second)
 
@@ -278,6 +284,10 @@ func (n *Node) validate() error {
 		return fmt.Errorf("limits.history_per_check must be 1..100000")
 	case l.ReplicationBatch < 1 || l.ReplicationBatch > l.ReplicationQueue:
 		return fmt.Errorf("limits.replication_batch must be 1..replication_queue")
+	case l.HourlyStatsRetention < 25*time.Hour:
+		return fmt.Errorf("limits.hourly_stats_retention must be at least 25h (24h uptime)")
+	case l.DailyStatsRetention < 31*24*time.Hour:
+		return fmt.Errorf("limits.daily_stats_retention must be at least 31 days (30d uptime)")
 	}
 	return n.validateAuth()
 }

@@ -8,8 +8,9 @@
 | Docker Engine + Compose v2 | 24+ / v2.20+ | Container image, local demo |
 | git | any | Getting the source |
 
-Third-party modules: `gopkg.in/yaml.v3` (config), `golang.org/x/crypto` (bcrypt) and
-`github.com/go-ldap/ldap/v3` (Active Directory). `github.com/jimlambrt/gldap` is used only by tests. The dashboard
+Third-party modules: `gopkg.in/yaml.v3` (config), `golang.org/x/crypto` (bcrypt),
+`github.com/go-ldap/ldap/v3` (Active Directory) and `modernc.org/sqlite` (embedded
+database; pure Go, so `CGO_ENABLED=0` static builds keep working). `github.com/jimlambrt/gldap` is used only by tests. The dashboard
 (HTML/CSS/JS) is embedded into the binary with `go:embed`, so there is
 no Node.js or frontend build step.
 

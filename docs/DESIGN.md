@@ -30,7 +30,7 @@ All of these components run in **one process** (a monolith):
                      │      ▲                                                   ▼                │
                      │      │ owned regions              Store ◄──── result ──► Evaluator ──► Notifier (log/webhook)
                      │  Cluster manager ◄─ heartbeat ─►  (memory +              (flap control,   │
-                     │  (state machine, witness lease,    snapshot)              peer verify)    │
+                     │  (state machine, witness lease,    SQLite db)              peer verify)    │
                      │   replication queue)                  │                                   │
                      │      │                               ▼                                    │
                      │  Peer API :8443 (mTLS)        Dashboard :8080 (HTTPS + auth, /metrics)    │
@@ -45,7 +45,7 @@ All of these components run in **one process** (a monolith):
 | Scheduler | `internal/scheduler` | Decide what is due, enqueue jobs, run workers, apply per-host limits and deadlines, hot-reload `sites.yaml` |
 | Checks | `internal/checks` | Each check takes a `context` with a deadline and returns a `Result` |
 | Evaluator / Notifier | `internal/alert` | Turn results into state-change events; verify with the peer before paging; post to a webhook |
-| Store | `internal/store` | Recent history per site/check and an event log; de-duplicates replicated items; snapshots to disk every 30 s |
+| Store | `internal/store` | SQLite database: results, per-check counters and current state, hourly/daily buckets, events, incidents. Updated on every result; the source for the dashboard and `/metrics` |
 | Cluster manager | `internal/cluster` | Heartbeats, peer status, takeover and handback, witness leases, `ownership.yaml`, replication |
 | Witness | `internal/witness` | Grants time-limited leases per region (the split-brain tie-breaker) |
 | Server | `internal/server` | Peer API, dashboard API and UI, Prometheus metrics |
@@ -249,7 +249,7 @@ The store groups events with the same key into one **incident**:
 | **Problem comes back after clearing** | Event stored as `REAPPEARED: … (first seen …, cleared …, reappearance #n)`. Status becomes OPEN again, `reappeared` is incremented, and `first_seen` stays at the original date |
 
 Each incident keeps a history of up to 50 transitions; the first one is
-always kept. Incidents are saved in the snapshot and replicated with the
+always kept. Incidents are saved in the database and replicated with the
 events, so both servers show the same history.
 
 The evaluator also starts from the incident store. After a restart, or
@@ -277,7 +277,9 @@ is also available at `GET /api/incidents`.
 ## 8. Observability
 
 The dashboard shows:
-- KPI tiles
+- KPI tiles: websites healthy/warning/critical/pending, certificates
+  expiring, availability, requests and failures over 24 h, open
+  incidents. All of these come from the database summary.
 - A cluster panel for this server and its peer: mode, owned regions,
   epoch, heartbeat age, config match, replication lag and witness status
 - A table of sites with their region and where they were checked from
@@ -298,9 +300,23 @@ The dashboard shows:
 | `monitor_replication_lag_seconds` | Age of the oldest unreplicated item |
 | `monitor_witness_reachable` | 1 if the witness answered |
 | `monitor_queue_depth`, `monitor_worker_saturation` | Scheduler pressure |
-| `monitor_checks_completed_total`, `monitor_checks_dropped_total` | Throughput, and runs skipped because the queue was full |
-| `site_check_status{site,site_region,check,checked_from}` | 0 = OK, 1 = WARN, 2 = CRIT |
-| `site_check_latency_ms` | Latency of the latest check |
+| `monitor_checks_completed_total`, `monitor_checks_dropped_total` | Throughput, and runs skipped because the queue was full (process counters) |
+| `monitor_open_incidents{severity}` | Open incidents (database) |
+
+Site metrics are read from the database (section 10), which is updated
+on every request, success or failure. Counters are persisted, so they
+**survive restarts** and keep increasing.
+
+| Metric | Meaning |
+|---|---|
+| `site_check_status{site,site_region,check,checked_from}` | Latest stored result: 0 = OK, 1 = WARN, 2 = CRIT |
+| `site_check_latency_ms` | Latency of the latest stored result |
+| `site_check_requests_total{site,check,result="ok\|warn\|crit"}` | Requests by outcome (counter). WARN means the request worked but was degraded; CRIT means it failed |
+| `site_check_latency_ms_sum{site,check}` | Total latency (counter); divide by `site_check_requests_total` for the average |
+| `site_check_latency_ms_max` | Highest latency seen |
+| `site_check_consecutive_failures` | Failed requests in a row (0 after a success) |
+| `site_check_last_success_timestamp_seconds`, `site_check_last_failure_timestamp_seconds` | When it last worked and last failed |
+| `site_check_uptime_ratio{window="24h\|30d"}` | Share of requests that didn't fail, from the stored hourly and daily buckets |
 | `site_cert_days_left{site}` | Days until the certificate expires |
 
 `GET /healthz` (no auth) returns 503 when the server is not completing
@@ -321,20 +337,21 @@ Changes take effect after a restart, which you can trigger with
 | `queue_size` | 500 | Pending jobs (≥ workers); overflow is skipped and counted |
 | `verify_concurrency` | 4 | Concurrent cross-region verify requests served |
 | `max_sites` | 2000 | Larger `sites.yaml` files are rejected |
-| `history_per_check` | 200 | Results kept per site/check (memory) |
+| `history_per_check` | 200 | Raw results kept per site/check (database) |
 | `max_events` | 500 | Events kept |
 | `max_response_body_kb` | 1024 | Bytes read from a monitored site |
 | `max_redirects` | 5 | Redirects followed |
 | `replication_queue` / `replication_batch` / `replication_interval` | 20000 / 1000 / 2s | Peer replication |
 | `max_replication_body_mb` | 32 | Largest batch accepted from the peer |
 | `max_api_body_kb` / `max_config_size_kb` | 1024 / 1024 | API request and config file size |
-| `snapshot_interval` | 30s | `results.json` write period |
+| `db_maintenance_interval` | 5m | Database retention clean-up |
+| `hourly_stats_retention` / `daily_stats_retention` | 168h / 9600h | Hourly and daily buckets kept (24 h uptime; 30 d uptime and a year of daily history) |
 | `http_read_timeout` / `http_write_timeout` | 30s / 60s | Server timeouts |
 
 Other bounded goroutines:
 - Heartbeat: one, with `peer.heartbeat_timeout`.
 - Replication: one.
-- Snapshot: one.
+- Database maintenance: one.
 - Auth housekeeping: one.
 - Webhook sends: one per event, with a 10 s timeout.
 
@@ -368,36 +385,66 @@ The two copies of `sites.yaml` converge automatically:
 
 ### 10.1 What each server stores
 
-| Data | Where | Format | Size |
+Everything is stored in an embedded **SQLite** database,
+`/data/sitemonitor.db`. It uses the pure-Go driver `modernc.org/sqlite`
+(no CGO, so the image stays a static distroless binary), WAL mode, and
+one transaction per write. Each server has its own database; replication
+feeds both, so both hold the same data.
+
+| Table | Contents | Updated | Retention |
 |---|---|---|---|
-| Check results (all sites, both regions, because of replication) | Memory, plus `/data/results.json` snapshot every 30 s and on shutdown (atomic write-and-rename) | JSON, about **0.4 KB per result** on disk, 0.6 KB in memory | **Fixed**: `sites × checks × history_per_check × 0.4 KB` |
-| Events (alerts, failovers, config changes) | Same snapshot | JSON | Last 500 events, about 150 KB |
-| Ownership state | `/data/ownership.yaml` | YAML | < 1 KB |
-| Configuration | `node.yaml`, `sites.yaml` (read-only) | YAML | KB |
+| `results` | Raw check results (status, message, latency, details) | Every check (own and replicated) | Newest `history_per_check` per site/check |
+| `check_state` | One row per site/check: **current state** (latest result) plus **lifetime counters**: total, ok, warn, crit, latency sum/max, consecutive failures, last success, last failure, first seen, certificate days left | **Same transaction as each result**, success or failure | Kept |
+| `check_hourly` | Per site/check/hour: total, ok, warn, crit, latency sum/max | Same transaction | `hourly_stats_retention` (default 7 days) |
+| `check_daily` | Per site/check/day (UTC): same columns | Same transaction | `daily_stats_retention` (default 400 days) |
+| `events` | Alerts, recoveries, failovers, config changes, logins | When emitted / replicated | Newest `max_events` |
+| `incidents` | One row per problem, with history (section 6.1) | With each keyed event | Oldest cleared beyond 2,000 removed |
+| `/data/ownership.yaml` | Failover state | On ownership change | — |
 
-Results are a **rolling window**: each site/check keeps its newest
-`history_per_check` results (default 200), and older ones are discarded.
-**Disk and memory usage therefore do not grow over time.** A year from
-now the server stores the same amount as after the first day.
+**How the stored values are maintained:**
+- **Counters are maintained on write, never calculated on read.** Each
+  stored result updates `check_state`, `check_hourly` and
+  `check_daily` in the same transaction as the result itself, so the
+  counters always match the stored results.
+- **Duplicates are ignored.** A replicated result that is already
+  stored (same ID) changes nothing, so counts are never doubled.
+- **Late results** (replication after an outage) are added to the
+  counters and buckets, but don't replace the current state if a newer
+  result exists.
+- **The failure streak doesn't depend on arrival order.** A failure
+  newer than the last success extends it. The newest success resets it
+  to the number of failures recorded after that success.
+- **Cross-region confirmation checks are real requests,** so they are
+  counted and replicated like any other check.
 
-| Websites (4 checks each) | `/data` on each server (constant) |
+**What the dashboard and `/metrics` read:**
+- current results, from `check_state`
+- counters and uptime, from `check_state` joined with the summed hourly
+  buckets (24 h) and daily buckets (30 d)
+- KPI tiles (`summary` in `/api/status`), aggregated by the database
+  from `check_state`, the buckets and `incidents`
+- each site's status, as the worst stored check status
+
+The browser shows these values without calculating anything.
+A periodic job (`db_maintenance_interval`, default 5 min) only removes
+data past its retention.
+
+**Upgrading from an older version:** if `/data/results.json` exists,
+it is imported once and renamed to `results.json.imported`. Imported
+results are added through the normal path, so they build counters too.
+
+| Websites (4 checks each) | Database size per server (constant once retention windows are full) |
 |---|---|
-| 100 | ~32 MB |
-| 500 | ~160 MB |
-| 1,000 | ~320 MB |
+| 100 | ~45 MB |
+| 500 | ~200 MB |
+| 1,000 | ~400 MB |
 
-How much time the window covers depends on each check's interval. With
-the production defaults and 200 results:
-
-| Check | Interval | Window covered |
-|---|---|---|
-| availability | 1 min | ~3.3 hours |
-| api | 5 min | ~17 hours |
-| cert | 6 h | ~50 days |
-| tls / headers | 24 h | ~200 days |
-
-The built-in store is therefore for **current state and recent
-history** (the dashboard), **not** for yearly reporting.
+Raw results are a rolling window. With the production intervals and
+200 results per check, it covers about 3 hours of availability checks,
+17 hours of API checks, 50 days of certificate checks and 200 days of
+TLS checks. **Uptime and request counts don't depend on that window:**
+they come from the hourly and daily buckets, and the daily buckets keep
+**400 days**.
 
 ### 10.2 Keeping a year of history
 
@@ -410,13 +457,15 @@ availability 525,600 + api 105,120 + cert 1,460 + tls 365 + headers 365  ≈ 633
 
 | Approach | Per site per year | 100 sites | 500 sites | 1,000 sites | Notes |
 |---|---|---|---|---|---|
-| Every raw result (JSON files or a PostgreSQL table with indexes) | ~250 MB | ~25 GB | ~125 GB | ~250 GB | Full detail; needs a database and partitioning. Doubles if both servers keep a copy |
+| Every raw result (raise `history_per_check`, or a PostgreSQL table) | ~200 MB | ~20 GB | ~100 GB | ~200 GB | Full detail; doubles because both servers keep a copy |
 | **Prometheus** scraping `/metrics` every 60 s (~11 series per site, ~1.5 bytes per compressed sample) | ~9 MB | ~1 GB | ~4.5 GB | ~9 GB | **Recommended.** Status, latency and certificate days kept as time series; PromQL for SLO and uptime reports |
-| Hourly roll-ups (min, avg, max, uptime % per site/check/hour) | ~4 MB | ~0.4 GB | ~2 GB | ~4 GB | Enough for yearly SLA reports |
+| **Built-in daily buckets** (`check_daily`, 400 days, already stored) | ~0.1 MB | ~11 MB | ~56 MB | ~110 MB | **Included**: requests, failures, uptime and latency per day for a year |
+| Hourly buckets for a whole year (raise `hourly_stats_retention` to 9000h) | ~2.5 MB | ~250 MB | ~1.2 GB | ~2.5 GB | Hour-level uptime for a year |
 
-Recommendation: keep the built-in rolling window for the dashboard, and
-let Prometheus (or Thanos or Mimir for multi-year storage) hold the
-yearly history. Set Prometheus retention to `--storage.tsdb.retention.time=400d`.
+Recommendation: the built-in database already keeps a year of daily
+counts and uptime, which is enough for SLA reports. Use Prometheus (or
+Thanos or Mimir for multi-year storage) for fine-grained time series
+and alert rules. Set Prometheus retention to `--storage.tsdb.retention.time=400d`.
 Scrape both monitors; deduplicate in queries with `max by (site, check)`.
 If raw per-result detail must be kept for audit, add a PostgreSQL or
 TimescaleDB sink partitioned by month, and size it from the first row
@@ -426,7 +475,8 @@ of the table above.
 
 | Limitation | Suggested next step |
 |---|---|
-| History is in memory with a JSON snapshot, limited to the last 200 results per check | Add PostgreSQL or TimescaleDB storage, or rely on Prometheus for long-term data |
+| Each server has its own SQLite file; there is no shared database | By design (no extra infrastructure; replication keeps both complete). For central reporting, use Prometheus or add a PostgreSQL sink |
+| Data imported from `results.json` may differ slightly between the two servers | Only affects history from before the upgrade; new data is identical on both |
 | The witness keeps leases in memory; after a witness restart, holders re-acquire within one heartbeat | Acceptable as designed; alternatively, back it with etcd or Consul |
 | Evaluator state (consecutive failure counts) is not replicated; after a takeover, an already-failing site may alert once more | De-duplicate alerts in the notification tool, or replicate evaluator state |
 | Login is username/password (local or AD); no SSO/MFA | Put the dashboard behind an OIDC proxy (oauth2-proxy, Entra ID) for SSO + MFA; or add an OIDC provider to `internal/auth` |

@@ -111,7 +111,15 @@ func runMonitor(args []string) error {
 	ctx, cancel := context.WithCancel(sigCtx) // cancel() = graceful restart requested through the API
 	defer cancel()
 
-	st := store.New(cfg.Node.DataDir, cfg.Limits.HistoryPerCheck, cfg.Limits.MaxEvents)
+	st, err := store.Open(cfg.Node.DataDir, store.Options{
+		HistoryPerCheck: cfg.Limits.HistoryPerCheck, MaxEvents: cfg.Limits.MaxEvents,
+		HourlyRetention: cfg.Limits.HourlyStatsRetention, DailyRetention: cfg.Limits.DailyStatsRetention,
+	})
+	if err != nil {
+		return fmt.Errorf("database: %w", err)
+	}
+	defer st.Close()
+	slog.Info("database open", "path", st.Path())
 	notifier := alert.NewNotifier(os.Getenv("ALERT_WEBHOOK_URL"))
 
 	// Wiring order: cluster needs scheduler status; scheduler needs cluster ownership.
@@ -179,16 +187,16 @@ func runMonitor(args []string) error {
 	listen(ctx, "dashboard", &http.Server{Addr: cfg.Node.DashboardListen, Handler: srv.DashboardHandler(), TLSConfig: dashTLS,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: lim.HTTPReadTimeout, WriteTimeout: lim.HTTPWriteTimeout, MaxHeaderBytes: 64 << 10})
 
-	go func() { // periodic snapshot of results to disk
-		t := time.NewTicker(cfg.Limits.SnapshotInterval)
+	go func() { // periodic database retention clean-up (every result is already committed)
+		t := time.NewTicker(cfg.Limits.DBMaintenanceInterval)
 		defer t.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if err := st.Save(); err != nil {
-					slog.Error("snapshot failed", "err", err)
+				if err := st.Maintain(time.Now()); err != nil {
+					slog.Error("database maintenance failed", "err", err)
 				}
 			}
 		}
@@ -196,7 +204,7 @@ func runMonitor(args []string) error {
 
 	go cl.Run(ctx)
 	sched.Run(ctx) // blocks until SIGTERM, then drains in-flight checks
-	_ = st.Save()
+
 	slog.Info("stopped")
 	return nil
 }

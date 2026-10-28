@@ -31,6 +31,11 @@ Key properties:
   mutual TLS. A witness lease prevents split-brain, failover takes about
   30 seconds, and handback is automatic. Results and events are
   replicated to both servers.
+- **Stored metrics.** Every request, success or failure, updates the
+  check's counters (OK/WARN/CRIT, latency, failure streak, last
+  success/failure) and its hourly and daily totals in an embedded
+  SQLite database. The dashboard and `/metrics` only read those stored
+  values, and a year of daily uptime is kept.
 - **Incidents, not alert storms.** Repeats of the same problem are
   collapsed into one incident that keeps the first date. Clearing and
   re-appearance are both recorded.
@@ -109,7 +114,7 @@ internal/scheduler/     jittered scheduling, bounded worker pool, per-host limit
 internal/cluster/       heartbeats, failover/handback, witness leases, replication
 internal/witness/       lease service (split-brain tie-breaker)
 internal/alert/         flap control, cross-region verification, webhook notifier
-internal/store/         in-memory results/events + disk snapshot
+internal/store/         SQLite database: results, per-check counters, hourly/daily stats, events, incidents
 internal/server/        peer API (mTLS), dashboard + config API, /metrics, embedded web UI
 internal/auth/          login: local bcrypt users or Active Directory (LDAP), sessions, roles
 internal/configstore/   validated, atomic, backed-up edits of sites.yaml / node.yaml
