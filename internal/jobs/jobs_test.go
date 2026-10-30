@@ -10,6 +10,7 @@ import (
 
 	"sitemonitor/internal/checks"
 	"sitemonitor/internal/config"
+	"sitemonitor/internal/periodic"
 	"sitemonitor/internal/store"
 )
 
@@ -36,6 +37,7 @@ func testCfg(dir string) config.JobsConf {
 
 type harness struct {
 	svc     *Service
+	engine  *periodic.Engine
 	st      *store.Store
 	results []checks.Result
 	events  []string
@@ -54,8 +56,9 @@ func newHarness(t *testing.T, mutate ...func(*config.JobsConf)) *harness {
 	for _, m := range mutate {
 		m(&cfg)
 	}
-	h := &harness{st: st, owned: map[string]bool{"IDC": true}}
-	h.svc, err = New(cfg, "monitor-idc-01", "IDC", st, func() map[string]bool { return h.owned },
+	h := &harness{st: st, owned: map[string]bool{"IDC": true},
+		engine: periodic.New(map[string]periodic.PoolConfig{Class: {Workers: cfg.MaxConcurrent, Queue: 16}})}
+	h.svc, err = New(cfg, "monitor-idc-01", "IDC", st, h.engine, func() map[string]bool { return h.owned },
 		func(r checks.Result) { h.results = append(h.results, r); st.AddResult(r) },
 		func(kind, sev, msg string) { h.events = append(h.events, sev+" "+msg) })
 	if err != nil {
@@ -267,45 +270,49 @@ func TestReplacedBinary(t *testing.T) {
 func TestSchedulingAndOwnership(t *testing.T) {
 	h := newHarness(t)
 	h.upload(t, opA, "ok.sh", "exit 0\n")
-	j, _ := h.svc.Create(opA, interval("tick", "ok.sh"))
+	j, _ := h.svc.Create(opA, interval("tick", "ok.sh")) // Create -> Reconcile -> engine task
 	fc := interval("fc-job", "ok.sh")
 	fc.Region = "FC"
 	h.svc.Create(opA, fc)
-	all, _ := h.svc.List()
 
-	now := time.Now()
-	h.svc.tick(now, all)                     // schedules the first run within 30s
-	h.svc.tick(now.Add(31*time.Second), all) // due
-	deadline := time.Now().Add(5 * time.Second)
-	for len(h.results) == 0 && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
+	key := "job:" + j.ID
+	first, ok := h.engine.Next(key)
+	if !ok {
+		t.Fatal("an active job of an owned region must be an engine task")
 	}
+	if d := time.Until(first); d > 31*time.Second {
+		t.Fatalf("first run must be within 30s, is in %s", d)
+	}
+	if h.engine.Stats(Class).Tasks != 1 {
+		t.Fatal("the FC job must not be scheduled on a server that doesn't own FC")
+	}
+
+	h.engine.Tick(first)
+	h.engine.Wait()
 	if len(h.results) != 1 || h.results[0].Site != "job:tick" {
-		t.Fatalf("want exactly one run of the IDC job (FC job belongs to the other server), got %+v", h.results)
+		t.Fatalf("want one run of the IDC job, got %+v", h.results)
 	}
-	if next := h.svc.next[j.ID].next; next.Sub(now.Add(31*time.Second)) != 5*time.Minute {
-		t.Fatalf("next run must be one interval later, got %s", next.Sub(now))
+	if next, _ := h.engine.Next(key); !next.Equal(first.Add(5 * time.Minute)) {
+		t.Fatalf("next run one interval later, got %s", next.Sub(first))
 	}
-	// a restart (fresh scheduler) does not run the job again before its interval
-	h.svc.next = map[string]sched{}
-	h.svc.tick(now.Add(40*time.Second), all)
-	if got := h.svc.next[j.ID].next; got.Before(h.results[0].Time.Truncate(time.Millisecond).Add(5 * time.Minute)) {
-		t.Fatalf("after restart next run %s is earlier than last run + interval", got)
-	}
-	h.svc.next = map[string]sched{}
-	h.svc.tick(now, all)
-	h.svc.tick(now.Add(31*time.Second), all)
 
-	// failover: this server takes over FC -> the FC job runs here too
-	h.owned["FC"] = true
-	h.svc.tick(now.Add(62*time.Second), all)
-	h.svc.tick(now.Add(93*time.Second), all)
-	deadline = time.Now().Add(5 * time.Second)
-	for len(h.results) < 2 && time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
+	// restart: a fresh engine must not run the job before last run + interval
+	h.engine.Sync(Class, nil)
+	h.svc.Reconcile()
+	if next, _ := h.engine.Next(key); next.Before(h.results[0].Time.Truncate(time.Millisecond).Add(5 * time.Minute)) {
+		t.Fatalf("after restart the next run (%s) is earlier than last run + interval", next)
 	}
-	if len(h.results) != 2 || h.results[1].Site != "job:fc-job" {
-		t.Fatalf("after takeover the FC job must run here: %+v", h.results)
+
+	// failover: this server takes over FC -> the FC job becomes a task here
+	h.owned["FC"] = true
+	h.svc.Reconcile()
+	if h.engine.Stats(Class).Tasks != 2 {
+		t.Fatal("after takeover the FC job must be scheduled here")
+	}
+	// disabling / expiring removes the task
+	h.svc.SetEnabled(opA, j.ID, false, "pause")
+	if _, ok := h.engine.Next(key); ok {
+		t.Fatal("a disabled job must not stay scheduled")
 	}
 }
 

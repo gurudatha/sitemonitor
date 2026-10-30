@@ -142,6 +142,9 @@ type Manager struct {
 	// OnConfigBehind is called when the peer has a newer sites.yaml for
 	// several heartbeats (config_api.auto_pull_newer).
 	OnConfigBehind func()
+	// OnOwnershipChange is called after this server starts or stops owning a
+	// region, so providers re-declare their periodic tasks immediately.
+	OnOwnershipChange func()
 	// OnJobsDiffer is called when the jobs/binaries/tokens state differs from
 	// the peer's for two heartbeats; it pulls and merges (newest record wins).
 	OnJobsDiffer func()
@@ -426,6 +429,9 @@ func (m *Manager) tick(ctx context.Context) {
 	}
 	if !changed {
 		return
+	}
+	if m.OnOwnershipChange != nil {
+		defer m.OnOwnershipChange() // after ownership.yaml and events below
 	}
 	switch {
 	case wantPeer && !hadPeer:

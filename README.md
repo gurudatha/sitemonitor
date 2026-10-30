@@ -21,6 +21,10 @@ runs these checks without putting load on the sites:
 
 Key properties:
 
+- **One lightweight periodic engine** runs everything periodic, website
+  checks and jobs alike. It uses a min-heap with a single timer and
+  separate bounded pools per class, so it does no work while nothing is
+  due.
 - **One monolith** sends **time-bound** requests. Every check has a hard
   deadline and runs on a bounded worker pool, with at most 2 concurrent
   connections per host.
@@ -121,7 +125,8 @@ curl -k -X POST https://localhost:9441/admin/toggle   # fc-orders-api returns 50
 cmd/monitor/            single binary: run | witness | gen-certs | demo-target | demo-ssh | hash-password
 internal/config/        node.yaml + sites.yaml loading and validation
 internal/checks/        availability, tls, cert, headers, api checks
-internal/scheduler/     jittered scheduling, bounded worker pool, per-host limits
+internal/periodic/      the one periodic engine (checks + jobs): min-heap, single timer, per-class pools
+internal/scheduler/     check provider: sites.yaml -> engine tasks, per-host limits, deadlines
 internal/cluster/       heartbeats, failover/handback, witness leases, replication
 internal/witness/       lease service (split-brain tie-breaker)
 internal/alert/         flap control, cross-region verification, webhook notifier

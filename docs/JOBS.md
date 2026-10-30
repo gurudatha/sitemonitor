@@ -227,6 +227,9 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" "$B/api/jobs?merge=pending"   # 
 - **Each job runs on one server only:** the one that owns the job's
   region. After a failover, the other server takes over that region's
   jobs.
+- **Scheduling:** jobs are tasks of the shared periodic engine (class
+  `job`, `jobs.max_concurrent` workers), separate from the website-check
+  pool. See DESIGN.md §2.1.
 - **No double runs:** the next run is based on the last stored run,
   whichever server made it, so a restart or failover doesn't run a job
   early.

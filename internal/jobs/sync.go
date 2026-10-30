@@ -136,6 +136,9 @@ func (s *Service) Merge(remote SyncState, fetch func(name string) ([]byte, error
 		}
 		changed += len(newer)
 	}
+	if changed > 0 {
+		s.Reconcile() // new / changed / deleted jobs from the peer
+	}
 	return changed, nil
 }
 

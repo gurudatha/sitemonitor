@@ -19,6 +19,7 @@ import (
 
 	"sitemonitor/internal/checks"
 	"sitemonitor/internal/config"
+	"sitemonitor/internal/periodic"
 	"sitemonitor/internal/store"
 )
 
@@ -53,20 +54,17 @@ type Service struct {
 	// Changed is called after every local change (the server tells the peer to sync).
 	Changed func()
 
-	sem     chan struct{}
+	engine  *periodic.Engine
 	mu      sync.Mutex
-	running map[string]bool
-	next    map[string]sched
+	running map[string]bool // a job never runs twice at once (schedule, run-now, startup)
 	seq     atomic.Int64
 	started time.Time
 }
 
-type sched struct {
-	version int64
-	next    time.Time
-}
+// Class is the periodic-engine pool used by jobs (jobs.max_concurrent workers).
+const Class = "job"
 
-func New(cfg config.JobsConf, node, region string, st *store.Store, owned func() map[string]bool,
+func New(cfg config.JobsConf, node, region string, st *store.Store, engine *periodic.Engine, owned func() map[string]bool,
 	onResult func(checks.Result), emit func(kind, severity, msg string)) (*Service, error) {
 	for _, d := range []string{cfg.BinariesDir, cfg.WorkDir} {
 		if err := os.MkdirAll(d, 0o750); err != nil {
@@ -78,8 +76,7 @@ func New(cfg config.JobsConf, node, region string, st *store.Store, owned func()
 		return nil, fmt.Errorf("jobs schema: %w", err)
 	}
 	return &Service{cfg: cfg, node: node, region: region, st: st, repo: r, owned: owned, onResult: onResult,
-		emit: emit, Changed: func() {}, sem: make(chan struct{}, cfg.MaxConcurrent),
-		running: map[string]bool{}, next: map[string]sched{}, started: time.Now()}, nil
+		emit: emit, Changed: func() {}, engine: engine, running: map[string]bool{}, started: time.Now()}, nil
 }
 
 func newID() string {
@@ -124,6 +121,7 @@ func (s *Service) save(j *Job, who string) error {
 	if err := s.repo.put(j); err != nil {
 		return err
 	}
+	s.Reconcile()
 	s.Changed()
 	return nil
 }
@@ -577,12 +575,16 @@ func (s *Service) RunNow(a Actor, id string, wait bool) (*checks.Result, error) 
 		return nil, fmt.Errorf("%w: job is already running", ErrConflict)
 	}
 	trigger := "manual by " + a.User
+	var r checks.Result
+	run := func(context.Context) { r = s.execute(j, trigger) }
 	if !wait {
-		go func() { defer s.finish(j.ID); s.execute(j, trigger) }()
+		go func() { defer s.finish(j.ID); s.engine.Do(context.Background(), Class, run) }()
 		return nil, nil
 	}
 	defer s.finish(j.ID)
-	r := s.execute(j, trigger)
+	if err := s.engine.Do(context.Background(), Class, run); err != nil {
+		return nil, err
+	}
 	return &r, nil
 }
 
@@ -620,10 +622,9 @@ func firstLine(b []byte) string {
 	return line
 }
 
-// execute runs one job (bounded by the worker pool) and records the result.
+// execute runs one job and records the result. Callers run it inside the
+// engine's "job" pool, which bounds how many jobs run at once.
 func (s *Service) execute(j *Job, trigger string) checks.Result {
-	s.sem <- struct{}{}
-	defer func() { <-s.sem }()
 
 	start := time.Now()
 	runID := fmt.Sprintf("%s-%d-%d", s.node, s.started.Unix(), s.seq.Add(1))
@@ -692,8 +693,10 @@ func short(s string) string {
 
 // ---------- scheduling ----------
 
-// Run schedules jobs until ctx ends. ready is closed once ownership is known;
-// startup jobs then run once for the regions this server owns.
+// Run waits until ownership is known (ready), runs the startup jobs once, and
+// then keeps the engine's job tasks current. Job changes, peer merges and
+// ownership changes call Reconcile directly; the ticker here only catches
+// run windows that start or end.
 func (s *Service) Run(ctx context.Context, ready <-chan struct{}) {
 	select {
 	case <-ctx.Done():
@@ -701,22 +704,15 @@ func (s *Service) Run(ctx context.Context, ready <-chan struct{}) {
 	case <-ready:
 	}
 	s.runStartupJobs()
-
-	t := time.NewTicker(time.Second)
+	s.Reconcile()
+	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
-	var cached []Job
-	var loaded time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case now := <-t.C:
-			if time.Since(loaded) > 3*time.Second { // jobs change rarely; re-read every few seconds
-				if all, err := s.repo.list(false); err == nil {
-					cached, loaded = all, now
-				}
-			}
-			s.tick(now, cached)
+		case <-t.C:
+			s.Reconcile()
 		}
 	}
 }
@@ -735,52 +731,68 @@ func (s *Service) runStartupJobs() {
 			continue
 		}
 		if s.tryStart(j.ID) {
-			go func() { defer s.finish(j.ID); s.execute(&j, "server startup") }()
+			go func() {
+				defer s.finish(j.ID)
+				s.engine.Do(context.Background(), Class, func(context.Context) { s.execute(&j, "server startup") })
+			}()
 		}
 	}
 }
 
-func (s *Service) tick(now time.Time, all []Job) {
+// Reconcile declares one engine task per interval job that is active (or
+// starts later) in a region this server owns. Existing tasks keep their
+// schedule; a new one starts within 30s (spread), but never before one
+// interval after the job's last stored run on either server.
+func (s *Service) Reconcile() {
+	if s.engine == nil {
+		return
+	}
+	all, err := s.repo.list(false)
+	if err != nil {
+		slog.Error("jobs reconcile", "err", err)
+		return
+	}
 	owned := s.owned()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	seen := map[string]bool{}
+	now := time.Now()
+	var tasks []periodic.Task
 	for i := range all {
 		j := all[i]
-		if j.Schedule.Type != TypeInterval || !j.Active(now) || !owned[j.Region] {
+		if j.Schedule.Type != TypeInterval || !owned[j.Region] {
 			continue
 		}
-		seen[j.ID] = true
+		state := j.State(now)
+		if state != "active" && state != "scheduled" {
+			continue
+		}
 		every := j.Interval()
-		sc, ok := s.next[j.ID]
-		if !ok || sc.version != j.Version {
-			// New, changed, or first seen after a restart / takeover: run soon (spread
-			// over up to 30s so jobs don't start together), but never before one
-			// interval after the last stored run, whichever server made it.
-			spread := min(every, 30*time.Second)
-			var b [2]byte
-			rand.Read(b[:])
-			next := now.Add(time.Duration(int(b[0])<<8|int(b[1])) * spread / 65536)
-			if last := s.st.LastResultTime(j.Site(), "job"); !ok && last.Add(every).After(next) {
-				next = last.Add(every)
-			}
-			sc = sched{version: j.Version, next: next}
+		var b [2]byte
+		rand.Read(b[:])
+		first := now.Add(time.Duration(int(b[0])<<8|int(b[1])) * min(every, 30*time.Second) / 65536)
+		if j.Schedule.StartAt.After(first) {
+			first = j.Schedule.StartAt
 		}
-		if !now.Before(sc.next) && !s.running[j.ID] {
-			select {
-			case s.sem <- struct{}{}: // only start if a worker is free; otherwise try next second
-				<-s.sem
-				s.running[j.ID] = true
-				sc.next = now.Add(every)
-				go func() { defer s.finish(j.ID); s.execute(&j, "schedule every "+j.Schedule.Every) }()
-			default:
-			}
+		if last := s.st.LastResultTime(j.Site(), "job"); last.Add(every).After(first) {
+			first = last.Add(every)
 		}
-		s.next[j.ID] = sc
+		id := j.ID
+		tasks = append(tasks, periodic.Task{Key: "job:" + id, Every: every, First: first, Run: func(context.Context) {
+			s.runScheduled(id)
+		}})
 	}
-	for id := range s.next {
-		if !seen[id] {
-			delete(s.next, id)
-		}
+	s.engine.Sync(Class, tasks)
+}
+
+// runScheduled re-reads the job (it may have changed, expired or moved to the
+// other server since the task was declared) and runs it.
+func (s *Service) runScheduled(id string) {
+	j, err := s.repo.get(id)
+	if err != nil || j.Deleted || !j.Active(time.Now()) || !s.owned()[j.Region] {
+		s.Reconcile() // drop the stale task
+		return
 	}
+	if !s.tryStart(id) {
+		return // a manual run is in progress
+	}
+	defer s.finish(id)
+	s.execute(j, "schedule every "+j.Schedule.Every)
 }

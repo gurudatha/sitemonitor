@@ -31,6 +31,7 @@ import (
 	"sitemonitor/internal/configstore"
 	"sitemonitor/internal/demotarget"
 	"sitemonitor/internal/jobs"
+	"sitemonitor/internal/periodic"
 	"sitemonitor/internal/scheduler"
 	"sitemonitor/internal/server"
 	"sitemonitor/internal/startup"
@@ -163,7 +164,13 @@ func runMonitor(args []string) error {
 		emit(alert.NewEvent(cfg.Node.ID, "CONFIG", "OK", "", "",
 			fmt.Sprintf("sites.yaml reloaded: %s -> %s (%d sites)", old.Version, nw.Version, len(nw.Sites))))
 	}
-	sched = scheduler.New(cfg, sites, cl.OwnedRegions, onResult, onConfig)
+	// One periodic engine for everything that runs on a period, with a separate
+	// bounded pool per class so jobs can never starve website checks.
+	engine := periodic.New(map[string]periodic.PoolConfig{
+		scheduler.Class: {Workers: cfg.Limits.Workers, Queue: cfg.Limits.QueueSize},
+		jobs.Class:      {Workers: cfg.Jobs.MaxConcurrent, Queue: 4 * cfg.Jobs.MaxConcurrent},
+	})
+	sched = scheduler.New(cfg, sites, cl.OwnedRegions, engine, st.LastResultTime, onResult, onConfig)
 
 	authMgr, err := auth.New(cfg.Auth, func(kind, sev, msg string) {
 		emit(alert.NewEvent(cfg.Node.ID, kind, sev, "", "", msg))
@@ -184,7 +191,7 @@ func runMonitor(args []string) error {
 	// User / admin periodic jobs. Runs are stored like check results, so they
 	// get counters, incidents, metrics and replication.
 	if cfg.Jobs.Enabled {
-		jobsSvc, err = jobs.New(cfg.Jobs, cfg.Node.ID, cfg.Node.Region, st, cl.OwnedRegions, onResult,
+		jobsSvc, err = jobs.New(cfg.Jobs, cfg.Node.ID, cfg.Node.Region, st, engine, cl.OwnedRegions, onResult,
 			func(kind, sev, msg string) { emit(alert.NewEvent(cfg.Node.ID, kind, sev, "", "", msg)) })
 		if err != nil {
 			return err
@@ -234,6 +241,13 @@ func runMonitor(args []string) error {
 		}
 	}()
 
+	// Region ownership changed (start, takeover, handback): re-declare tasks now.
+	cl.OnOwnershipChange = func() {
+		sched.Reconcile()
+		if jobsSvc != nil {
+			jobsSvc.Reconcile()
+		}
+	}
 	go cl.Run(ctx)
 
 	// "Server came up": once this server knows which regions it owns, call the
@@ -260,7 +274,8 @@ func runMonitor(args []string) error {
 	if jobsSvc != nil {
 		go jobsSvc.Run(ctx, ready)
 	}
-	sched.Run(ctx) // blocks until SIGTERM, then drains in-flight checks
+	go sched.Run(ctx)
+	engine.Run(ctx) // blocks until SIGTERM, then waits for running checks and jobs
 
 	slog.Info("stopped")
 	return nil

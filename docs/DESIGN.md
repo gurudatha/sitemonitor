@@ -22,19 +22,18 @@
 All of these components run in **one process** (a monolith):
 
 ```
-                     ┌────────────────────────── monitor (one process) ──────────────────────────┐
- sites.yaml ──reload─►  Scheduler ──► Job queue ──► Worker pool (N) ──► Checks (deadline-bound) │
- node.yaml           │   (jitter,      (bounded)     per-host semaphore    availability/tls/     │
-                     │    ownership                                        cert/headers/api      │
-                     │    filter)                                               │                │
-                     │      ▲                                                   ▼                │
-                     │      │ owned regions              Store ◄──── result ──► Evaluator ──► Notifier (log/webhook)
-                     │  Cluster manager ◄─ heartbeat ─►  (memory +              (flap control,   │
-                     │  (state machine, witness lease,    SQLite db)              peer verify)    │
-                     │   replication queue)                  │                                   │
-                     │      │                               ▼                                    │
-                     │  Peer API :8443 (mTLS)        Dashboard :8080 (HTTPS + auth, /metrics)    │
-                     └──────┼─────────────────────────────────────────────────────────────────────┘
+                     ┌──────────────────────────── monitor (one process) ────────────────────────────┐
+ sites.yaml ──reload─►  Check provider ──┐                                                            │
+ jobs (db, API) ─────►  Job provider ────┼─Sync(class, tasks)─► Periodic engine ─► pool "check" ─► Checks (deadline,
+                     │       ▲           │                      (min-heap +        (workers,      per-host limit)
+                     │       │ ownership changed                one timer)         queue)  ─► pool "job" ─► Jobs (local /
+                     │  Cluster manager ◄─ heartbeat ─►                                           SSH, timeout)
+                     │  (state machine, witness lease,                     │ results                          │
+                     │   replication queue)                                ▼                                  │
+                     │      │                          Store (SQLite) ◄────┴────► Evaluator ──► Notifier      │
+                     │      │                                │                    (flap control, peer verify) │
+                     │  Peer API :8443 (mTLS)        Dashboard :8080 (HTTPS + auth, /metrics, OpenAPI)         │
+                     └──────┼──────────────────────────────────────────────────────────────────────────────────┘
                             │ mTLS                                           │
                     peer server (other region)                    witness (third location)
 ```
@@ -42,7 +41,9 @@ All of these components run in **one process** (a monolith):
 | Component | File | Responsibility |
 |---|---|---|
 | Config | `internal/config` | Load and validate `node.yaml` and `sites.yaml`; hash the sites file |
-| Scheduler | `internal/scheduler` | Decide what is due, enqueue jobs, run workers, apply per-host limits and deadlines, hot-reload `sites.yaml` |
+| Periodic engine | `internal/periodic` | **The one scheduler** for everything periodic (checks and jobs): min-heap of next run times, a single timer, a bounded worker pool and wait queue per class, no catch-up, no overlap, shedding. See section 2.1 |
+| Check provider | `internal/scheduler` | Turns `sites.yaml` into engine tasks for the owned regions, runs each check with a per-host limit and deadline, hot-reloads `sites.yaml` |
+| Job provider | `internal/jobs` | Turns active jobs into engine tasks for the owned regions; runs programs locally or over SSH (see section 11) |
 | Checks | `internal/checks` | Each check takes a `context` with a deadline and returns a `Result` |
 | Evaluator / Notifier | `internal/alert` | Turn results into state-change events; verify with the peer before paging; post to a webhook |
 | Store | `internal/store` | SQLite database: results, per-check counters and current state, hourly/daily buckets, events, incidents. Updated on every result; the source for the dashboard and `/metrics` |
@@ -50,20 +51,36 @@ All of these components run in **one process** (a monolith):
 | Witness | `internal/witness` | Grants time-limited leases per region (the split-brain tie-breaker) |
 | Server | `internal/server` | Peer API, dashboard API and UI, Prometheus metrics |
 
+### 2.1 The periodic engine
+
+Website checks and jobs are both **periodic activities**, so one module
+runs them all: `internal/periodic`. It is designed to cost close to
+nothing when there is no work.
+
+| Property | How |
+|---|---|
+| **No polling** | Tasks sit in a **min-heap** ordered by next run time. One timer sleeps until the earliest is due. While nothing is due, nothing runs. Checking for due work costs ~34 ns with 100,000 tasks scheduled, and allocates nothing (`BenchmarkDispatchNothingDue`) |
+| **Cheap changes** | Add, remove and reschedule are O(log n). Providers declare their whole task set per class with `Sync` when something changes. A task that is still present **keeps its next run time**, so reloads never cause bursts or skipped runs |
+| **Event-driven** | `sites.yaml` changes, job changes, peer merges and **region ownership changes** (start, takeover, handback) call the providers' `Reconcile` immediately. A 30-second safety re-sync catches run windows that start or end |
+| **Isolation** | Each class (`check`, `job`) has its own **bounded worker pool and wait queue** (`limits.workers` / `queue_size`, `jobs.max_concurrent`), so a slow job can never delay website checks. When a queue is full the run is dropped and retried after `min(interval, 10s)` |
+| **No catch-up, no overlap** | After a pause a task runs once and then keeps its rhythm. If its previous run is still busy, that occurrence is skipped |
+| **Shedding** | `criticality: low` sites are postponed by 3 intervals while the check pool is saturated |
+| **Stateless** | The engine stores nothing. A new task's first run is spread over `min(interval, 2 min)` for checks or 30 s for jobs, but **never before the last stored result + interval** (from either server), so restarts and failovers keep the rhythm |
+| **Ad-hoc work** | `Do(class, fn)` runs run-now requests and startup jobs through the same pools |
+
+Counters per class (`tasks`, `running`, `waiting`, `completed`,
+`dropped`, `skipped`, `shed`) appear in `/api/status` → `scheduler`.
+
 ### How a check runs
 
-1. Once a second, the scheduler builds the set of jobs
-   (`site × check`) for the **regions this server currently owns**.
-2. A new job gets a random first run within `min(interval, 2 min)`, so
-   startup and takeover never cause a burst of traffic. Every later run
-   is scheduled at `interval ± 10 %`.
-3. A due job goes into a bounded queue. If the queue is full, the run is
-   skipped and counted in `monitor_checks_dropped_total`.
-4. A worker acquires the per-host semaphore (default 2) and runs the
-   check with `context.WithTimeout(site.timeout)`. The TLS check gets
-   twice the timeout because it makes several handshakes.
-5. The result is stored locally, queued for replication to the peer,
-   and passed to the evaluator.
+1. The check provider declares one task per `site × check` of the
+   **regions this server currently owns**.
+2. When the task is due, the engine runs it in the `check` pool.
+3. The check acquires the per-host semaphore (default 2) and runs with
+   `context.WithTimeout(site.timeout)`. The TLS check gets twice the
+   timeout because it makes several handshakes.
+4. The result is stored, queued for replication to the peer, and passed
+   to the evaluator.
 
 ## 3. Checks
 
@@ -86,11 +103,11 @@ have disabled TLS 1.0 have also disabled SSLv3.
 | Global concurrency | 20 workers | `limits.workers` |
 | Concurrent connections per host | 2 | `limits.per_host_limit` |
 | Per-check deadline | 15 s (30 s for `tls`) | `defaults.timeout` / `site.timeout` |
-| Interval jitter | ±10 % | scheduler |
-| Startup / takeover spreading | random within `min(interval, 2 min)` | scheduler |
+| Startup / takeover spreading | random within `min(interval, 2 min)`, never before last result + interval | periodic engine |
+| No catch-up / no overlap | a late task runs once; a busy task's next occurrence is skipped | periodic engine |
 | Response body cap | 1 MB | checks |
 | Keep-alive | disabled; no idle sockets left open on targets | checks |
-| Shedding under saturation | `criticality: low` sites run at 3× their interval when the queue is > 80 % full or all workers are busy | scheduler |
+| Shedding under saturation | `criticality: low` sites are postponed by 3 intervals while all workers are busy and the queue is ≥ 80 % full | periodic engine |
 | Identification | Custom `User-Agent` with a contact address | `defaults.user_agent` |
 | API safety | Configure **read-only or idempotent** calls only; use test accounts | `sites.yaml` |
 
@@ -154,7 +171,8 @@ is running but no longer performing checks therefore counts as down.
    if FC has not renewed the lease within `lease_ttl` (20 s).
 3. IDC increments its `epoch`, adds FC to its owned regions, writes
    `ownership.yaml` and emits a `FAILOVER` event.
-4. The scheduler picks up FC's sites with spread-out start times.
+4. The ownership change re-declares the engine's tasks right away, so
+   FC's sites are scheduled with spread-out start times.
    Results show `checked_from = IDC`, which the dashboard marks as
    "(failover)".
 
@@ -332,9 +350,9 @@ Changes take effect after a restart, which you can trigger with
 
 | Key | Default | Bounds |
 |---|---|---|
-| `workers` | 20 | Goroutines running checks (1–1000) |
+| `workers` | 20 | Check pool of the periodic engine: checks running at once (1–1000) |
 | `per_host_limit` | 2 | Concurrent connections to one site (1–20) |
-| `queue_size` | 500 | Pending jobs (≥ workers); overflow is skipped and counted |
+| `queue_size` | 500 | Check pool wait queue (≥ workers); overflow is dropped, counted and retried |
 | `verify_concurrency` | 4 | Concurrent cross-region verify requests served |
 | `max_sites` | 2000 | Larger `sites.yaml` files are rejected |
 | `history_per_check` | 200 | Raw results kept per site/check (database) |

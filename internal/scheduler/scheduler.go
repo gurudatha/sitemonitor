@@ -1,5 +1,6 @@
-// Package scheduler decides which checks are due and runs them on a bounded
-// worker pool with per-host concurrency limits and hard deadlines.
+// Package scheduler turns the website checks of sites.yaml into tasks of the
+// periodic engine and runs each check with a per-host concurrency limit and a
+// hard deadline.
 package scheduler
 
 import (
@@ -15,18 +16,11 @@ import (
 
 	"sitemonitor/internal/checks"
 	"sitemonitor/internal/config"
+	"sitemonitor/internal/periodic"
 )
 
-type job struct {
-	key   string
-	sites *config.Sites
-	site  config.Site
-	check string
-}
-
-type entry struct {
-	next time.Time
-}
+// Class is the periodic-engine pool used by website checks.
+const Class = "check"
 
 type Stats struct {
 	Jobs       int       `json:"jobs"`
@@ -37,39 +31,36 @@ type Stats struct {
 	Saturation float64   `json:"saturation"`
 	Completed  int64     `json:"completed"`
 	Dropped    int64     `json:"dropped"`
+	Skipped    int64     `json:"skipped"` // previous run of the same check still busy
+	Shed       int64     `json:"shed"`    // low-criticality runs postponed under saturation
 	LastCheck  time.Time `json:"last_check_completed"`
 }
 
+// Scheduler turns sites.yaml into periodic tasks for the regions this server
+// owns. Timing, pools and back-pressure are handled by the periodic engine.
 type Scheduler struct {
 	cfg      *config.Node
 	sites    atomic.Pointer[config.Sites]
 	owned    func() map[string]bool
+	engine   *periodic.Engine
+	lastRun  func(site, check string) time.Time // newest stored result (either server)
 	onResult func(checks.Result)
 	onConfig func(old, new *config.Sites)
-
-	queue    chan job
-	mu       sync.Mutex
-	jobs     map[string]*entry
-	inflight map[string]bool
 
 	hostMu  sync.Mutex
 	hostSem map[string]chan struct{}
 
-	busy, completed, dropped atomic.Int64
-	lastCompleted            atomic.Int64
-	started                  time.Time
-	seq                      atomic.Int64
+	lastCompleted atomic.Int64
+	started       time.Time
+	seq           atomic.Int64
 }
 
-func New(cfg *config.Node, sites *config.Sites, owned func() map[string]bool,
-	onResult func(checks.Result), onConfig func(old, new *config.Sites)) *Scheduler {
+func New(cfg *config.Node, sites *config.Sites, owned func() map[string]bool, engine *periodic.Engine,
+	lastRun func(site, check string) time.Time, onResult func(checks.Result), onConfig func(old, new *config.Sites)) *Scheduler {
 	s := &Scheduler{
-		cfg: cfg, owned: owned, onResult: onResult, onConfig: onConfig,
-		queue:    make(chan job, cfg.Limits.QueueSize),
-		jobs:     map[string]*entry{},
-		inflight: map[string]bool{},
-		hostSem:  map[string]chan struct{}{},
-		started:  time.Now(),
+		cfg: cfg, owned: owned, engine: engine, lastRun: lastRun, onResult: onResult, onConfig: onConfig,
+		hostSem: map[string]chan struct{}{},
+		started: time.Now(),
 	}
 	s.sites.Store(sites)
 	return s
@@ -77,88 +68,59 @@ func New(cfg *config.Node, sites *config.Sites, owned func() map[string]bool,
 
 func (s *Scheduler) Sites() *config.Sites { return s.sites.Load() }
 
+// Run keeps the task set current until ctx ends. The cluster calls Reconcile
+// on ownership changes and SetSites calls it on config changes; the slow
+// ticker here is only a safety net.
 func (s *Scheduler) Run(ctx context.Context) {
-	var wg sync.WaitGroup
-	for i := 0; i < s.cfg.Limits.Workers; i++ {
-		wg.Add(1)
-		go func() { defer wg.Done(); s.worker(ctx) }()
-	}
 	go s.watchConfig(ctx)
-
-	t := time.NewTicker(time.Second)
+	s.Reconcile()
+	t := time.NewTicker(30 * time.Second)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			wg.Wait() // graceful: let in-flight checks finish (each is time-bound)
 			return
 		case <-t.C:
-			s.tick()
+			s.Reconcile()
 		}
 	}
 }
 
-// jitter returns d ± 10%.
-func jitter(d time.Duration) time.Duration {
-	return d + time.Duration((rand.Float64()*0.2-0.1)*float64(d))
-}
-
-func (s *Scheduler) saturated() bool {
-	return len(s.queue) > cap(s.queue)*8/10 || s.busy.Load() >= int64(s.cfg.Limits.Workers)
-}
-
-func (s *Scheduler) tick() {
+// Reconcile declares one task per site/check of the owned regions. Tasks that
+// already exist keep their schedule; new ones (startup, config change,
+// takeover) start spread over min(interval, 2m), but not before one interval
+// after the last stored result, so a restart or failover keeps the rhythm.
+func (s *Scheduler) Reconcile() {
 	sites := s.sites.Load()
 	owned := s.owned()
 	now := time.Now()
-
-	desired := map[string]job{}
-	for _, site := range sites.Sites {
+	var tasks []periodic.Task
+	for i := range sites.Sites {
+		site := sites.Sites[i]
 		if !owned[site.Region] {
 			continue
 		}
 		for _, c := range site.Checks {
-			k := site.Name + "|" + c
-			desired[k] = job{key: k, sites: sites, site: site, check: c}
-		}
-	}
-
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for k := range s.jobs {
-		if _, ok := desired[k]; !ok {
-			delete(s.jobs, k) // region handed back, or site removed from config
-		}
-	}
-	slow := s.saturated()
-	for k, j := range desired {
-		iv := sites.Interval(&j.site, j.check)
-		e, ok := s.jobs[k]
-		if !ok {
-			// New job (startup, config change or takeover): spread the first run
-			// over one interval so a takeover does not create a burst.
-			first := iv
-			if first > 2*time.Minute {
-				first = 2 * time.Minute
+			iv := sites.Interval(&site, c)
+			first := now.Add(time.Duration(rand.Int64N(int64(min(iv, 2*time.Minute)))))
+			if s.lastRun != nil {
+				if next := s.lastRun(site.Name, c).Add(iv); next.After(first) {
+					first = next
+				}
 			}
-			s.jobs[k] = &entry{next: now.Add(time.Duration(rand.Int64N(int64(first))))}
-			continue
-		}
-		if now.Before(e.next) || s.inflight[k] {
-			continue
-		}
-		if slow && j.site.Criticality == "low" {
-			iv *= 3 // shed load from low-criticality sites when saturated
-		}
-		select {
-		case s.queue <- j:
-			s.inflight[k] = true
-			e.next = now.Add(jitter(iv))
-		default:
-			s.dropped.Add(1)
-			e.next = now.Add(10 * time.Second)
+			check := c
+			tasks = append(tasks, periodic.Task{
+				Key: "check:" + site.Name + "|" + c, Every: iv, First: first,
+				Shed: site.Criticality == "low", // postponed first when the pool is saturated
+				Run: func(ctx context.Context) {
+					if r := s.execute(ctx, sites, &site, check); r != nil {
+						s.onResult(*r)
+					}
+				},
+			})
 		}
 	}
+	s.engine.Sync(Class, tasks)
 }
 
 func (s *Scheduler) hostSemaphore(rawURL string) chan struct{} {
@@ -174,25 +136,6 @@ func (s *Scheduler) hostSemaphore(rawURL string) chan struct{} {
 		s.hostSem[host] = sem
 	}
 	return sem
-}
-
-func (s *Scheduler) worker(ctx context.Context) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case j := <-s.queue:
-			s.busy.Add(1)
-			r := s.execute(ctx, j.sites, &j.site, j.check)
-			s.busy.Add(-1)
-			s.mu.Lock()
-			delete(s.inflight, j.key)
-			s.mu.Unlock()
-			if r != nil {
-				s.onResult(*r)
-			}
-		}
-	}
 }
 
 // execute runs one check with a per-host limit and a hard deadline.
@@ -218,7 +161,6 @@ func (s *Scheduler) execute(parent context.Context, sites *config.Sites, site *c
 	r.ID = fmt.Sprintf("%s-%d-%d", s.cfg.Node.ID, s.started.Unix(), s.seq.Add(1))
 	r.Node = s.cfg.Node.ID
 	r.NodeRegion = s.cfg.Node.Region
-	s.completed.Add(1)
 	s.lastCompleted.Store(time.Now().UnixNano())
 	return &r
 }
@@ -240,10 +182,7 @@ func (s *Scheduler) RunNow(siteName, check string) (*checks.Result, error) {
 
 // Healthy: this node is actually performing checks (not just running).
 func (s *Scheduler) Healthy() bool {
-	s.mu.Lock()
-	n := len(s.jobs)
-	s.mu.Unlock()
-	if n == 0 {
+	if s.engine.Stats(Class).Tasks == 0 {
 		return true // standby: nothing to do is fine
 	}
 	last := s.lastCompleted.Load()
@@ -263,14 +202,11 @@ func (s *Scheduler) Healthy() bool {
 }
 
 func (s *Scheduler) Stats() Stats {
-	s.mu.Lock()
-	n := len(s.jobs)
-	s.mu.Unlock()
-	busy := s.busy.Load()
+	e := s.engine.Stats(Class)
 	st := Stats{
-		Jobs: n, QueueDepth: len(s.queue), QueueCap: cap(s.queue), Busy: busy,
-		Workers: s.cfg.Limits.Workers, Completed: s.completed.Load(), Dropped: s.dropped.Load(),
-		Saturation: float64(busy) / float64(s.cfg.Limits.Workers),
+		Jobs: e.Tasks, QueueDepth: e.Waiting, QueueCap: e.QueueCap, Busy: int64(e.Running),
+		Workers: e.Workers, Completed: e.Completed, Dropped: e.Dropped, Skipped: e.Skipped, Shed: e.Shed,
+		Saturation: float64(e.Running) / float64(max(e.Workers, 1)),
 	}
 	if last := s.lastCompleted.Load(); last > 0 {
 		st.LastCheck = time.Unix(0, last).UTC()
@@ -278,13 +214,14 @@ func (s *Scheduler) Stats() Stats {
 	return st
 }
 
-// SetSites swaps in a new sites configuration (config API or file change).
-// Jobs for removed sites disappear and new ones are scheduled on the next tick.
+// SetSites swaps in a new sites configuration (config API or file change)
+// and updates the tasks right away.
 func (s *Scheduler) SetSites(ns *config.Sites) {
 	old := s.sites.Swap(ns)
 	if old.Hash != ns.Hash && s.onConfig != nil {
 		s.onConfig(old, ns)
 	}
+	s.Reconcile()
 }
 
 // watchConfig hot-reloads sites.yaml when it changes on disk.

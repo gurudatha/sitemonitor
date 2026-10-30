@@ -1,7 +1,7 @@
 # Shared website inventory. MUST be identical on both servers (IDC and FC);
 # the servers compare its SHA-256 in every heartbeat and alert on mismatch.
 # Keep it in Git and roll it out to both servers from CI.
-version: "2026-10-26T12:01:34Z"
+version: "2026-10-30T18:28:15Z"
 defaults:
   timeout: 10s
   user_agent: "SiteMonitor/1.0 (+ops@example.com)"
