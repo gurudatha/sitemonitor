@@ -254,6 +254,7 @@ async function refresh() {
     const res = await api("api/status");
     if (!res.ok) throw new Error("HTTP " + res.status);
     render(await res.json());
+    await loadJobs();
   } catch (err) {
     $("updated").textContent = "update failed: " + err.message;
   }
@@ -280,6 +281,7 @@ async function showApp() {
   $("app-view").hidden = false;
   const u = me.user;
   $("user").textContent = `${u.display_name} · ${u.role} (${u.provider})`;
+  await initJobs();
   await refresh();
   timer = setInterval(refresh, 5000);
 }
@@ -318,3 +320,192 @@ $("f-status").addEventListener("change", () => last && renderSites(last));
     showApp();
   } catch (_) { showLogin(); }
 })();
+
+// ---------- periodic jobs ----------
+// All data and every action goes through the same API that agents use.
+
+let jobOpts = null;
+let jobsAvailable = false;
+const isRole = (r) => me && { viewer: 1, operator: 2, admin: 3 }[me.user.role] >= { viewer: 1, operator: 2, admin: 3 }[r];
+
+async function initJobs() {
+  const res = await api("api/jobs/options");
+  jobsAvailable = res.ok;
+  $("jobs-section").hidden = !jobsAvailable;
+  if (!jobsAvailable) return;
+  jobOpts = await res.json();
+  $("jobs-actions").hidden = !isRole("operator");
+  const f = $("job-form");
+  const opt = (v, t) => { const o = document.createElement("option"); o.value = v; o.textContent = t || v; return o; };
+  f.every.replaceChildren(...jobOpts.intervals.map((v) => opt(v)));
+  f.every.value = "5m";
+  f.credential.replaceChildren(...(jobOpts.credentials.length ? jobOpts.credentials.map((v) => opt(v)) : [opt("", "(none configured by the admin)")]));
+  f.region.value = (last && last.cluster && last.cluster.region) || "IDC";
+}
+
+function scheduleText(j) {
+  if (j.schedule.type === "startup") return "at server start";
+  return "every " + j.schedule.every + (j.schedule.ends_at ? " until " + fmtTime(j.schedule.ends_at) : j.scope === "admin" ? " (no end)" : "");
+}
+function whereText(j) {
+  return j.target ? `${j.target.host}:${j.target.port} (${j.target.os}, ${j.target.credential})` : `${j.region} monitor`;
+}
+
+async function jobPost(path, body) {
+  const res = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined });
+  if (!res.ok) {
+    let msg = "HTTP " + res.status;
+    try { msg = (await res.json()).error || msg; } catch (_) { /* not json */ }
+    alert(msg);
+    return null;
+  }
+  await loadJobs();
+  return res;
+}
+
+function jobButtons(j) {
+  const me_ = me.user.username;
+  const mine = j.owner === me_ && j.scope === "user";
+  const canEdit = isRole("admin") || (isRole("operator") && mine);
+  const btn = (label, fn, cls) => { const b = el("button", { text: label, cls: cls || "" }); b.addEventListener("click", (e) => { e.stopPropagation(); fn(); }); return b; };
+  const out = [];
+  const mr = j.merge_request && j.merge_request.status === "pending";
+  if (canEdit && j.status === "approved") out.push(btn("Run now", () => jobPost(`api/jobs/${j.id}/run`)));
+  if (canEdit && j.status === "approved") out.push(btn("Disable", () => jobPost(`api/jobs/${j.id}/disable`, { reason: prompt("Reason (optional)") || "" })));
+  if (canEdit && j.status === "disabled") out.push(btn("Enable", () => jobPost(`api/jobs/${j.id}/enable`)));
+  if (mine && isRole("operator") && !mr && j.scope === "user") out.push(btn("Request merge", () => {
+    const note = prompt("Why should this become an admin periodic activity?");
+    if (note !== null) jobPost(`api/jobs/${j.id}/merge-request`, { note });
+  }));
+  if (isRole("admin") && j.scope === "user") out.push(btn(mr ? "Approve merge" : "Merge", () => jobPost(`api/jobs/${j.id}/merge`), mr ? "primary" : ""));
+  if (isRole("admin") && mr) out.push(btn("Reject merge", () => {
+    const reason = prompt("Reason for rejecting the merge");
+    if (reason !== null) jobPost(`api/jobs/${j.id}/merge/reject`, { reason });
+  }));
+  if (isRole("admin") && j.status === "pending") out.push(btn("Approve", () => jobPost(`api/jobs/${j.id}/approve`)));
+  if (isRole("admin") && j.last_run && /changed since approval/.test(j.last_run.message)) out.push(btn("Re-approve", () => jobPost(`api/jobs/${j.id}/approve`)));
+  if (canEdit) out.push(btn("Delete", async () => {
+    if (!confirm(`Delete job ${j.name}?`)) return;
+    const res = await api(`api/jobs/${j.id}`, { method: "DELETE" });
+    if (!res.ok) alert((await res.json()).error); else loadJobs();
+  }, "danger"));
+  return el("div", { cls: "actions" }, ...out);
+}
+
+async function loadJobs() {
+  if (!jobsAvailable) return;
+  const [jr, br] = await Promise.all([api("api/jobs"), api("api/binaries")]);
+  if (!jr.ok || !br.ok) return;
+  let jobs = await jr.json();
+  const bins = await br.json();
+  if ($("jobs-mine").checked) jobs = jobs.filter((j) => j.owner === me.user.username);
+  const active = jobs.filter((j) => j.state === "active").length;
+  const merges = jobs.filter((j) => j.merge_request && j.merge_request.status === "pending").length;
+  $("jobs-summary").textContent = `${jobs.length} jobs · ${active} active` + (merges ? ` · ${merges} merge request${merges > 1 ? "s" : ""} waiting` : "");
+  $("jobs").tBodies[0].replaceChildren(...jobs.map((j) => {
+    const lr = j.last_run;
+    const st = j.stats;
+    const mr = j.merge_request && j.merge_request.status === "pending";
+    const tr = el("tr", { cls: "clickable", title: "Click for runs and output" },
+      el("td", {}, el("span", { cls: "site-name", text: j.name }), el("span", { cls: "site-url", text: `${j.owner}${j.description ? " · " + j.description : ""}` })),
+      el("td", {}, badge(j.scope === "admin" ? "INFO" : "NONE", j.scope), mr ? el("span", { cls: "msg pending-merge", text: "merge requested" }) : null),
+      el("td", {}, badge({ active: "OK", scheduled: "INFO", expired: "NONE", disabled: "NONE", pending: "WARN", rejected: "CRIT" }[j.state] || "NONE", j.state)),
+      el("td", {}, el("span", { text: j.binary }), el("span", { cls: "msg", text: (j.args || []).join(" ") })),
+      el("td", { text: scheduleText(j) }),
+      el("td", { text: whereText(j) }),
+      el("td", {}, lr ? badge(lr.status, `exit ${lr.details.exit_code}`) : el("span", { cls: "muted", text: "—" }), lr ? el("span", { cls: "msg", text: ago(lr.time) + " · " + lr.message }) : null),
+      el("td", { text: st ? `${st.ok + st.warn}/${st.total}` : "0", title: st ? `${st.ok} ok · ${st.warn} warn · ${st.crit} failed` : "" }),
+      el("td", {}, jobButtons(j)),
+    );
+    tr.addEventListener("click", () => showJob(j));
+    return tr;
+  }));
+  $("bins-summary").textContent = `(${bins.length})`;
+  $("bins").tBodies[0].replaceChildren(...bins.map((b) => {
+    const del = el("button", { text: "Delete", cls: "danger" });
+    del.addEventListener("click", async () => {
+      if (!confirm(`Delete ${b.name}?`)) return;
+      const res = await api(`api/binaries/${encodeURIComponent(b.name)}`, { method: "DELETE" });
+      if (!res.ok) alert((await res.json()).error); else loadJobs();
+    });
+    return el("tr", {}, el("td", { text: b.name }), el("td", { text: b.kind }), el("td", { text: (b.size / 1024).toFixed(1) + " KB" }),
+      el("td", { text: b.sha256.slice(0, 16) + "…", title: b.sha256 }), el("td", { text: b.uploaded_by }),
+      el("td", {}, isRole("admin") || b.uploaded_by === me.user.username ? del : null));
+  }));
+  const f = $("job-form");
+  const cur = f.binary.value;
+  f.binary.replaceChildren(...bins.map((b) => { const o = document.createElement("option"); o.value = b.name; o.textContent = `${b.name} (${b.kind})`; return o; }));
+  if (cur) f.binary.value = cur;
+}
+
+async function showJob(j) {
+  const res = await api(`api/jobs/${j.id}/runs?limit=10`);
+  const runs = res.ok ? await res.json() : [];
+  $("detail-title").textContent = `Job ${j.name}`;
+  const pairs = [
+    ["Scope / state", `${j.scope} · ${j.state}`], ["Owner", j.owner], ["Program", `${j.binary} ${(j.args || []).join(" ")}`],
+    ["Pinned SHA-256", j.binary_sha256 || "—"], ["Schedule", scheduleText(j)], ["Where", whereText(j)], ["Timeout", j.timeout],
+  ];
+  if (j.merge_request) pairs.push(["Merge request", `${j.merge_request.status} — by ${j.merge_request.requested_by} ${fmtTime(j.merge_request.requested_at)}${j.merge_request.note ? ": " + j.merge_request.note : ""}${j.merge_request.decided_by ? ` (decided by ${j.merge_request.decided_by}${j.merge_request.reason ? ": " + j.merge_request.reason : ""})` : ""}`]);
+  if (j.reason) pairs.push(["Reason", j.reason]);
+  const body = pairs.flatMap(([k, v]) => [el("dt", { text: k }), el("dd", { text: v })]);
+  body.push(el("dt", { text: "Last runs" }), el("dd", {}, ...(runs.length ? runs.slice().reverse().map((r) => el("div", {},
+    badge(r.status, `exit ${r.details.exit_code}`), el("span", { text: ` ${fmtTime(r.time)} · ${r.details.trigger} · ${r.latency_ms} ms on ${r.node}` }),
+    r.details.stdout ? el("pre", { cls: "out", text: r.details.stdout }) : null,
+    r.details.stderr ? el("pre", { cls: "out", text: "stderr: " + r.details.stderr }) : null,
+    !r.details.stdout && !r.details.stderr ? el("div", { cls: "muted", text: r.message }) : null)) : [el("span", { cls: "muted", text: "no runs yet" })])));
+  $("detail-body").replaceChildren(...body);
+  $("detail").showModal();
+}
+
+function jobFormVisibility() {
+  const f = $("job-form");
+  const interval = f.type.value === "interval";
+  document.querySelectorAll("#job-form .when-interval").forEach((x) => { x.hidden = !interval; });
+  document.querySelectorAll("#job-form .when-remote").forEach((x) => { x.hidden = f.where.value !== "remote"; });
+  document.querySelectorAll("#job-form .admin-only").forEach((x) => { x.hidden = !isRole("admin"); });
+  const asAdmin = isRole("admin") && !f.as_user.checked;
+  const prev = f.run_for.value;
+  const opts = (asAdmin ? [["", "no end (admin activity)"]] : []).concat(jobOpts.run_for.map((v) => [v, v]));
+  f.run_for.replaceChildren(...opts.map(([v, t]) => { const o = document.createElement("option"); o.value = v; o.textContent = t; return o; }));
+  f.run_for.value = opts.some(([v]) => v === prev) ? prev : opts[asAdmin ? 0 : opts.length - 1][0];
+}
+
+$("job-add").addEventListener("click", () => {
+  $("job-form").reset();
+  $("job-error").textContent = "";
+  jobFormVisibility();
+  $("job-dialog").showModal();
+});
+["type", "where", "as_user"].forEach((n) => $("job-form")[n].addEventListener("change", jobFormVisibility));
+$("job-cancel").addEventListener("click", () => $("job-dialog").close());
+$("jobs-mine").addEventListener("change", loadJobs);
+$("job-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  const body = {
+    name: f.elements["name"].value.trim(), description: f.description.value.trim(), binary: f.binary.value, region: f.region.value,
+    args: f.args.value.split("\n").map((a) => a.replace(/\r$/, "")).filter((a) => a !== ""),
+    schedule: f.type.value === "startup" ? { type: "startup", run_for: f.run_for.value } : { type: "interval", every: f.every.value, run_for: f.run_for.value },
+    timeout: f.timeout.value.trim(), scope: isRole("admin") && !f.as_user.checked ? "admin" : "user",
+  };
+  if (f.where.value === "remote") body.target = { host: f.host.value.trim(), port: Number(f.port.value), os: f.os.value, credential: f.credential.value };
+  const res = await api("api/jobs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) { $("job-error").textContent = (await res.json()).error; return; }
+  $("job-dialog").close();
+  loadJobs();
+});
+
+$("bin-upload").addEventListener("click", () => { $("upload-form").reset(); $("upload-error").textContent = ""; $("upload-dialog").showModal(); });
+$("upload-cancel").addEventListener("click", () => $("upload-dialog").close());
+$("upload-form").addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const f = ev.target;
+  const file = f.file.files[0];
+  if (!file) return;
+  const name = f.elements["name"].value.trim() || file.name;
+  const res = await api(`api/binaries/${encodeURIComponent(name)}`, { method: "PUT", headers: { "Content-Type": "application/octet-stream" }, body: file });
+  if (!res.ok) { $("upload-error").textContent = (await res.json()).error; return; }
+  $("upload-dialog").close();
+  loadJobs();
+});

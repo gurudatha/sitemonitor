@@ -106,3 +106,29 @@ config_api:
   sync_to_peer: true                # push sites.yaml changes to the peer immediately
   auto_pull_newer: true             # on mismatch, fetch the newer sites.yaml from the peer
   backups: 10                       # previous versions kept in <config dir>/backups/
+
+# Periodic jobs: users' and admins' own programs, run on an interval or when the
+# server comes up, locally or on remote Linux / Windows (Cygwin) servers.
+# See docs/JOBS.md.
+jobs:
+  enabled: true
+  binaries_dir: /data/jobs/bin      # the one directory for every uploaded program
+  work_dir: /data/jobs/work         # per-run scratch directories (removed after each run)
+  max_binary_size_mb: 50
+  max_concurrent: 4                 # jobs running at the same time on this server
+  default_timeout: 5m
+  max_timeout: 30m
+  max_output_kb: 64                 # stdout / stderr kept per run
+  user_max_run_for: 24h             # user jobs run for at most one day
+  require_approval: false           # user jobs run right away; only merging needs an admin
+  startup_hook: true                # call the native (cgo) startup hook if compiled in
+  exit_codes: { ok: [0], warn: [1] }  # anything else = CRIT
+  # interpreters: { ".py": [python3], ".pl": [perl], ".ps1": [pwsh, -NoLogo, -NoProfile, -NonInteractive, -File], ".sh": [sh] }
+  remote:
+    known_hosts: /shared/known_hosts  # host keys are always verified (ssh-keyscan -p PORT HOST >> file)
+    connect_timeout: 10s
+    remote_dir: /tmp                  # where programs are pushed (also works on Cygwin)
+    credentials:                      # jobs reference these by name; secrets never pass through the API
+      demo-linux: { user: svc, password: "${DEMO_SSH_PASSWORD}" }
+      # linux-svc:  { user: svcmon, private_key: /certs/jobs_ed25519 }
+      # win-cygwin: { user: monitor, password: "${WIN_CYGWIN_PASSWORD}" }

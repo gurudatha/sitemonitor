@@ -4,15 +4,24 @@ All endpoints are served on the **dashboard port** (default `:8080`, HTTPS)
 of each server. Either server can be used, because results and
 `sites.yaml` are kept in sync.
 
+## Machine-readable description
+
+`GET /api/openapi.json` (no login needed) describes **every endpoint**:
+method, path, minimum role (`x-required-role`), parameters and body. It
+is generated from the same route table the server uses, so it is always
+complete and current. Point agents (LLM tools, scripts, API clients) at
+it.
+
 ## Authentication
 
-There are two ways to authenticate. Both go through the configured
+There are three ways to authenticate. API tokens are the right choice for agents. Both go through the configured
 providers (`auth.providers`: local users or Active Directory). See
 [AUTHENTICATION.md](AUTHENTICATION.md).
 
 | Method | For | How |
 |---|---|---|
 | **Session cookie** | Browser / dashboard | `POST /api/login` → `sm_session` cookie (HttpOnly, Secure, SameSite=Strict). Every write must also send `X-CSRF-Token: <csrf_token>` from the login or `/api/me` response |
+| **API token** (bearer) | **Agents**, automation | An admin creates one: `POST /api/tokens {"name":"my-agent","role":"operator","ttl":"720h"}`. The secret (`smt_…`) is shown **once**; send `Authorization: Bearer smt_…`. Only its SHA-256 is stored; tokens are replicated to the peer and can be revoked (`DELETE /api/tokens/{id}`) |
 | **HTTP Basic** | Scripts, CI, Prometheus | `curl -u user:password …`. Successful logins are cached for `auth.basic_cache_ttl` (default 1 min), so automation doesn't cause an AD bind on every call |
 
 **Roles.** Each role includes the permissions of the roles before it.
@@ -52,6 +61,21 @@ providers (`auth.providers`: local users or Active Directory). See
 | `GET /metrics` | Prometheus text format (see DESIGN.md §8) |
 | `GET /api/config/sites` | Raw `sites.yaml`. The `ETag` header is the file's SHA-256 hash |
 | `GET /api/config/sites/{name}` | One site as YAML, exactly as written in the file |
+
+## Jobs, programs and tokens
+
+Periodic jobs (programs run on an interval or at server start, locally or
+on remote servers) have their own guide with all endpoints and examples:
+**[JOBS.md §6](JOBS.md#6-api-for-people-and-agents)**.
+
+| Method & path | Role | Description |
+|---|---|---|
+| `GET /api/tokens` | admin | List API tokens (no secrets) |
+| `POST /api/tokens` | admin | Create a token; returns the secret once |
+| `DELETE /api/tokens/{id}` | admin | Revoke a token |
+| `GET /api/summary` | viewer | KPI summary (database aggregate) |
+| `GET /api/stats` | viewer | Stored counters of every site/check and job |
+| `GET /api/events?limit=` | viewer | Newest events |
 
 ## sites.yaml endpoints (operator)
 

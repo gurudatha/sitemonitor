@@ -173,6 +173,10 @@ func Open(dataDir string, opt Options) (*Store, error) {
 		return nil, fmt.Errorf("database schema: %w", err)
 	}
 	s := &Store{db: db, opt: opt, path: path}
+	if err := s.ensureTokens(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("database schema: %w", err)
+	}
 	if err := s.importLegacy(dataDir); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("import results.json: %w", err)
@@ -238,3 +242,9 @@ func (s *Store) Maintain(now time.Time) error {
 		return err
 	})
 }
+
+// DB exposes the database to packages that keep their own tables (jobs).
+func (s *Store) DB() *sql.DB { return s.db }
+
+// Write runs fn in a serialised write transaction.
+func (s *Store) Write(fn func(tx *sql.Tx) error) error { return s.write(fn) }

@@ -72,6 +72,10 @@ type Manager struct {
 	sessions map[string]*session // key: sha256(token)
 	failures map[string]*failure // key: username|ip
 	basic    map[string]cached   // key: sha256(user\x00password)
+
+	// TokenLookup resolves "Authorization: Bearer <token>" (API tokens for
+	// agents and scripts). Nil disables bearer authentication.
+	TokenLookup func(token string) (*Identity, bool)
 }
 
 // New builds the providers listed in auth.providers, in order.
@@ -254,6 +258,16 @@ func isMutation(method string) bool {
 // identify resolves the caller from a session cookie or HTTP Basic credentials.
 // csrfOK reports whether a mutating request carries proof it is not cross-site.
 func (m *Manager) identify(r *http.Request) (id *Identity, csrfOK bool, err error) {
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		if m.TokenLookup != nil {
+			if ident, ok := m.TokenLookup(strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))); ok {
+				// Bearer tokens are never attached by browsers automatically, so no CSRF risk.
+				return ident, true, nil
+			}
+		}
+		slog.Warn("invalid API token", "ip", ClientIP(r))
+		return nil, false, ErrInvalidCredentials
+	}
 	if c, cerr := r.Cookie(CookieName); cerr == nil && c.Value != "" {
 		m.mu.Lock()
 		s := m.sessions[hashKey(c.Value)]

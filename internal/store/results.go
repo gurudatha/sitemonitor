@@ -171,3 +171,12 @@ func (s *Store) History(site, check string, n int) []checks.Result {
 // windowStart returns the first hour / day bucket of a window ending now.
 func hourBucket(now time.Time, d time.Duration) int64 { return ms(now.Add(-d)) / 3600000 }
 func dayBucket(now time.Time, d time.Duration) int64  { return ms(now.Add(-d)) / 86400000 }
+
+// LastResultTime returns when the newest stored result of a site/check was
+// taken (zero if none). The job scheduler uses it so a restart or failover
+// does not run a job again before its interval has passed.
+func (s *Store) LastResultTime(site, check string) time.Time {
+	var t sql.NullInt64
+	s.db.QueryRow(`SELECT time_ms FROM check_state WHERE site = ? AND check_name = ?`, site, check).Scan(&t)
+	return nullMs(t)
+}

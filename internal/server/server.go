@@ -21,6 +21,7 @@ import (
 	"sitemonitor/internal/cluster"
 	"sitemonitor/internal/config"
 	"sitemonitor/internal/configstore"
+	"sitemonitor/internal/jobs"
 	"sitemonitor/internal/scheduler"
 	"sitemonitor/internal/store"
 )
@@ -35,6 +36,7 @@ type Server struct {
 	Cluster *cluster.Manager
 	Auth    *auth.Manager
 	Config  *configstore.Store
+	Jobs    *jobs.Service // nil when jobs.enabled is false
 	Emit    func(store.Event)
 	Restart func(actor string) // graceful exit; the supervisor (docker/systemd) starts it again
 
@@ -111,6 +113,11 @@ func (s *Server) PeerHandler() http.Handler {
 		writeJSON(w, res)
 	})
 	mux.HandleFunc("GET /peer/config/sites", s.peerGetSites)
+	if s.Jobs != nil {
+		mux.HandleFunc("GET /peer/jobs/state", s.peerJobsState)
+		mux.HandleFunc("GET /peer/jobs/binaries/{name}", s.peerJobsBinary)
+		mux.HandleFunc("POST /peer/jobs/changed", s.peerJobsChanged)
+	}
 	mux.HandleFunc("PUT /peer/config/sites", s.peerPutSites)
 
 	// Authorization: the TLS layer already verified the cert chain; additionally
@@ -142,47 +149,15 @@ func securityHeaders(next http.Handler) http.Handler {
 
 func (s *Server) DashboardHandler() http.Handler {
 	static, _ := fs.Sub(webFS, "web")
-	a := s.Auth
 	mux := http.NewServeMux()
-
-	// public
 	mux.Handle("GET /", http.FileServerFS(static)) // static UI only; all data comes from authenticated APIs
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
-		if !s.Sched.Healthy() {
-			http.Error(w, "not completing checks", http.StatusServiceUnavailable)
-			return
+	for _, rt := range s.routes() {
+		pattern := rt.Method + " " + rt.Path
+		if rt.Role == "" {
+			mux.HandleFunc(pattern, rt.H)
+		} else {
+			mux.Handle(pattern, s.Auth.RequireFunc(rt.Role, rt.H))
 		}
-		w.Write([]byte("ok"))
-	})
-	mux.HandleFunc("POST /api/login", s.login)
-	mux.HandleFunc("POST /api/logout", s.logout)
-	mux.HandleFunc("GET /api/auth/info", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, map[string]any{"providers": a.Providers(), "node": s.Cfg.Node.ID, "node_name": s.Cfg.Node.Name})
-	})
-
-	// viewer
-	mux.Handle("GET /api/me", a.RequireFunc(config.RoleViewer, s.me))
-	mux.Handle("GET /api/status", a.RequireFunc(config.RoleViewer, s.status))
-	mux.Handle("GET /api/history", a.RequireFunc(config.RoleViewer, func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, s.Store.History(r.URL.Query().Get("site"), r.URL.Query().Get("check"), 100))
-	}))
-	mux.Handle("GET /api/limits", a.RequireFunc(config.RoleViewer, s.limits))
-	mux.Handle("GET /api/incidents", a.RequireFunc(config.RoleViewer, s.incidents))
-	mux.Handle("GET /metrics", a.RequireFunc(config.RoleViewer, s.metrics))
-
-	// configuration API (see configapi.go)
-	if s.Cfg.ConfigAPI.Enabled {
-		mux.Handle("GET /api/config/sites", a.RequireFunc(config.RoleViewer, s.getSites))
-		mux.Handle("GET /api/config/sites/{name}", a.RequireFunc(config.RoleViewer, s.getSite))
-		mux.Handle("GET /api/config/backups", a.RequireFunc(config.RoleOperator, s.backups))
-		mux.Handle("POST /api/config/sites/validate", a.RequireFunc(config.RoleOperator, s.validateSites))
-		mux.Handle("PUT /api/config/sites", a.RequireFunc(config.RoleOperator, s.putSites))
-		mux.Handle("PUT /api/config/sites/{name}", a.RequireFunc(config.RoleOperator, s.putSite))
-		mux.Handle("DELETE /api/config/sites/{name}", a.RequireFunc(config.RoleOperator, s.deleteSite))
-		mux.Handle("GET /api/config/node", a.RequireFunc(config.RoleAdmin, s.getNode))
-		mux.Handle("POST /api/config/node/validate", a.RequireFunc(config.RoleAdmin, s.validateNode))
-		mux.Handle("PUT /api/config/node", a.RequireFunc(config.RoleAdmin, s.putNode))
-		mux.Handle("POST /api/admin/restart", a.RequireFunc(config.RoleAdmin, s.restart))
 	}
 	return securityHeaders(mux)
 }

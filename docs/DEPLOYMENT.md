@@ -74,7 +74,8 @@ can carry both regions):
 | Both monitors | witness | 9443/tcp | Lease acquire, renew and release (mTLS) |
 | Both monitors | Monitored sites | 443/80 (as configured) | Checks |
 | Both monitors | Webhook (Slack, Teams, …) | 443/tcp | Alerts |
-| Operators, Prometheus | Both monitors | 8080/tcp | Dashboard, `/api/*`, `/metrics` |
+| Operators, Prometheus, agents | Both monitors | 8080/tcp | Dashboard, `/api/*`, `/metrics` |
+| Both monitors | Remote job servers | 22/tcp (as configured) | Remote periodic jobs over SSH ([JOBS.md](JOBS.md)) |
 
 Port 8443 accepts **only** clients presenting the peer's certificate.
 Don't expose it beyond the two monitors and the witness.
@@ -154,6 +155,7 @@ defaults:
 
 | Variable | Required | Purpose |
 |---|---|---|
+| Passwords of `jobs.remote.credentials` (e.g. `WIN_CYGWIN_PASSWORD`) | when remote jobs use password login | Referenced as `${VAR}` in `node.yaml` |
 | `LDAP_BIND_PASSWORD` | when `auth.providers` includes `ldap` | AD service-account password (`auth.ldap.bind_password: "${LDAP_BIND_PASSWORD}"`) |
 | `ALERT_WEBHOOK_URL` | no | Slack-compatible webhook for events |
 | `GOMEMLIMIT` | recommended | See sizing |

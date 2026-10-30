@@ -52,6 +52,7 @@ type Heartbeat struct {
 	ConfigVersion      string    `json:"config_version"`
 	ConfigHash         string    `json:"config_hash"`
 	ConfigModTime      time.Time `json:"config_mod_time"`
+	JobsHash           string    `json:"jobs_hash"`
 	WorkerSaturation   float64   `json:"worker_saturation"`
 	LastCheckCompleted time.Time `json:"last_check_completed"`
 	SelfHealthy        bool      `json:"self_healthy"`
@@ -62,6 +63,7 @@ type Heartbeat struct {
 type LocalStatus struct {
 	ConfigVersion, ConfigHash string
 	ConfigModTime             time.Time
+	JobsHash                  string
 	Saturation                float64
 	LastCheck                 time.Time
 	Healthy                   bool
@@ -140,6 +142,11 @@ type Manager struct {
 	// OnConfigBehind is called when the peer has a newer sites.yaml for
 	// several heartbeats (config_api.auto_pull_newer).
 	OnConfigBehind func()
+	// OnJobsDiffer is called when the jobs/binaries/tokens state differs from
+	// the peer's for two heartbeats; it pulls and merges (newest record wins).
+	OnJobsDiffer func()
+	jobsBeats    int
+	jobsPulling  bool
 
 	repMu       sync.Mutex
 	repResults  []checks.Result
@@ -209,7 +216,7 @@ func (m *Manager) LocalHeartbeat() Heartbeat {
 	defer m.mu.Unlock()
 	return Heartbeat{
 		NodeID: m.cfg.Node.ID, NodeName: m.cfg.Node.Name, Region: m.home(), Epoch: m.epoch, Mode: m.modeLocked(),
-		OwnedRegions: m.ownedList(), ConfigVersion: ls.ConfigVersion, ConfigHash: ls.ConfigHash, ConfigModTime: ls.ConfigModTime,
+		OwnedRegions: m.ownedList(), ConfigVersion: ls.ConfigVersion, ConfigHash: ls.ConfigHash, ConfigModTime: ls.ConfigModTime, JobsHash: ls.JobsHash,
 		WorkerSaturation: ls.Saturation, LastCheckCompleted: ls.LastCheck, SelfHealthy: ls.Healthy,
 		Time: time.Now().UTC(),
 	}
@@ -297,6 +304,15 @@ func (m *Manager) tick(ctx context.Context) {
 	} else {
 		m.mismatchBeats++
 	}
+	if err == nil && hb.JobsHash != "" && hb.JobsHash != ls.JobsHash {
+		m.jobsBeats++
+	} else {
+		m.jobsBeats = 0
+	}
+	jobsPull := m.jobsBeats >= 2 && !m.jobsPulling && m.OnJobsDiffer != nil
+	if jobsPull {
+		m.jobsPulling = true
+	}
 	pull := !match && m.mismatchBeats >= 3 && !m.pulling && m.OnConfigBehind != nil &&
 		hb.ConfigModTime.Truncate(time.Millisecond).After(ls.ConfigModTime.Truncate(time.Millisecond))
 	if pull {
@@ -324,6 +340,14 @@ func (m *Manager) tick(ctx context.Context) {
 		}
 	}
 
+	if jobsPull {
+		go func() {
+			m.OnJobsDiffer()
+			m.mu.Lock()
+			m.jobsPulling, m.jobsBeats = false, 0
+			m.mu.Unlock()
+		}()
+	}
 	if pull {
 		go func() {
 			m.OnConfigBehind()
@@ -495,6 +519,35 @@ func (m *Manager) Verify(site, check string) (checks.Result, bool) {
 		return r, false
 	}
 	return r, true
+}
+
+// PeerJSON calls a peer endpoint with a JSON body (in may be nil) and decodes
+// the JSON answer into out (may be nil).
+func (m *Manager) PeerJSON(ctx context.Context, method, path string, timeout time.Duration, in, out any) error {
+	return m.request(ctx, method, path, timeout, in, out)
+}
+
+// PeerBytes downloads a raw body from the peer (at most max bytes).
+func (m *Manager) PeerBytes(ctx context.Context, path string, max int64) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.cfg.Peer.URL+path, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := m.client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%s: HTTP %d", path, resp.StatusCode)
+	}
+	b, err := io.ReadAll(io.LimitReader(resp.Body, max+1))
+	if err == nil && int64(len(b)) > max {
+		err = fmt.Errorf("%s: larger than %d bytes", path, max)
+	}
+	return b, err
 }
 
 // ---------- sites.yaml sync ----------

@@ -5,6 +5,7 @@
 //	monitor gen-certs   -out dir -names a,b,c    create the private CA + mTLS certs
 //	monitor demo-target -name x -cert-days 20    fake website for local testing
 //	monitor hash-password                        bcrypt hash for auth.local.users
+//	monitor demo-ssh                             demo SSH server for remote jobs (docker-compose)
 package main
 
 import (
@@ -29,8 +30,10 @@ import (
 	"sitemonitor/internal/config"
 	"sitemonitor/internal/configstore"
 	"sitemonitor/internal/demotarget"
+	"sitemonitor/internal/jobs"
 	"sitemonitor/internal/scheduler"
 	"sitemonitor/internal/server"
+	"sitemonitor/internal/startup"
 	"sitemonitor/internal/store"
 	"sitemonitor/internal/witness"
 )
@@ -38,7 +41,7 @@ import (
 func main() {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, nil)))
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: monitor run|witness|gen-certs|demo-target|hash-password [flags]")
+		fmt.Fprintln(os.Stderr, "usage: monitor run|witness|gen-certs|demo-target|demo-ssh|hash-password [flags]")
 		os.Exit(2)
 	}
 	var err error
@@ -53,6 +56,8 @@ func main() {
 		err = runDemoTarget(os.Args[2:])
 	case "hash-password":
 		err = hashPassword()
+	case "demo-ssh":
+		err = runDemoSSH(os.Args[2:])
 	default:
 		err = fmt.Errorf("unknown command %q", os.Args[1])
 	}
@@ -132,14 +137,19 @@ func runMonitor(args []string) error {
 			cl.EnqueueEvent(e)
 		}
 	}
+	var jobsSvc *jobs.Service
 	local := func() cluster.LocalStatus {
 		s, stats := sched.Sites(), sched.Stats()
+		jobsHash := ""
+		if jobsSvc != nil {
+			jobsHash = jobsSvc.Hash()
+		}
 		var mod time.Time
 		if fi, err := os.Stat(cfg.Monitor.SitesFile); err == nil {
 			mod = fi.ModTime().UTC()
 		}
 		return cluster.LocalStatus{ConfigVersion: s.Version, ConfigHash: s.Hash, ConfigModTime: mod,
-			Saturation: stats.Saturation, LastCheck: stats.LastCheck, Healthy: sched.Healthy()}
+			Saturation: stats.Saturation, LastCheck: stats.LastCheck, Healthy: sched.Healthy(), JobsHash: jobsHash}
 	}
 	cl = cluster.New(cfg, client, local, emit)
 	eval := alert.NewEvaluator(cfg.Node.ID, cfg.Monitor.FailuresToAlert, emit, cl.Verify, st.IncidentLevel)
@@ -162,8 +172,26 @@ func runMonitor(args []string) error {
 		return fmt.Errorf("auth: %w", err)
 	}
 	go authMgr.Run(ctx)
+	// API tokens (agents): "Authorization: Bearer <token>"
+	authMgr.TokenLookup = func(token string) (*auth.Identity, bool) {
+		t, ok := st.LookupToken(store.TokenHash(token))
+		if !ok {
+			return nil, false
+		}
+		return &auth.Identity{Username: "token:" + t.Name, DisplayName: t.Name, Role: t.Role, Provider: "token"}, true
+	}
 
-	srv := &server.Server{Cfg: cfg, Store: st, Sched: sched, Cluster: cl, Auth: authMgr, Emit: emit,
+	// User / admin periodic jobs. Runs are stored like check results, so they
+	// get counters, incidents, metrics and replication.
+	if cfg.Jobs.Enabled {
+		jobsSvc, err = jobs.New(cfg.Jobs, cfg.Node.ID, cfg.Node.Region, st, cl.OwnedRegions, onResult,
+			func(kind, sev, msg string) { emit(alert.NewEvent(cfg.Node.ID, kind, sev, "", "", msg)) })
+		if err != nil {
+			return err
+		}
+	}
+
+	srv := &server.Server{Cfg: cfg, Store: st, Sched: sched, Cluster: cl, Auth: authMgr, Emit: emit, Jobs: jobsSvc,
 		Config: configstore.New(*path, cfg, sched.SetSites),
 		Restart: func(actor string) {
 			time.Sleep(500 * time.Millisecond) // let the HTTP response go out
@@ -172,6 +200,10 @@ func runMonitor(args []string) error {
 		}}
 	if cfg.ConfigAPI.AutoPullNewer {
 		cl.OnConfigBehind = srv.PullFromPeer
+	}
+	if jobsSvc != nil {
+		jobsSvc.Changed = srv.NotifyPeerJobs // push: the peer pulls right away
+		cl.OnJobsDiffer = srv.PullJobs       // and heartbeats catch anything missed
 	}
 	peerTLS, err := certs.ServerTLS(cfg.TLS.Cert, cfg.TLS.Key, cfg.TLS.CA, true)
 	if err != nil {
@@ -203,6 +235,31 @@ func runMonitor(args []string) error {
 	}()
 
 	go cl.Run(ctx)
+
+	// "Server came up": once this server knows which regions it owns, call the
+	// native startup hook (placeholder, cgo) and run the startup jobs.
+	ready := make(chan struct{})
+	go func() {
+		deadline := time.Now().Add(30 * time.Second)
+		for len(cl.OwnedRegions()) == 0 && time.Now().Before(deadline) && ctx.Err() == nil {
+			time.Sleep(500 * time.Millisecond)
+		}
+		if cfg.Jobs.StartupHook {
+			rc, err := startup.Run(startup.Info{Node: cfg.Node.ID, Region: cfg.Node.Region})
+			switch {
+			case errors.Is(err, startup.ErrNotCompiled):
+				slog.Info("startup hook", "status", err.Error())
+			case err != nil:
+				emit(alert.NewEvent(cfg.Node.ID, "STARTUP", "WARN", "", "", fmt.Sprintf("startup hook failed (rc=%d): %v", rc, err)))
+			default:
+				emit(alert.NewEvent(cfg.Node.ID, "STARTUP", "OK", "", "", "startup hook completed"))
+			}
+		}
+		close(ready)
+	}()
+	if jobsSvc != nil {
+		go jobsSvc.Run(ctx, ready)
+	}
 	sched.Run(ctx) // blocks until SIGTERM, then drains in-flight checks
 
 	slog.Info("stopped")
@@ -253,6 +310,19 @@ func genCerts(args []string) error {
 	days := fs.Int("days", 365, "certificate validity in days")
 	fs.Parse(args)
 	return certs.Generate(*out, strings.Split(*names, ","), time.Duration(*days)*24*time.Hour)
+}
+
+func runDemoSSH(args []string) error {
+	fs := flag.NewFlagSet("demo-ssh", flag.ExitOnError)
+	var o demotarget.SSHOptions
+	fs.StringVar(&o.Addr, "addr", ":2222", "listen address")
+	fs.StringVar(&o.Name, "name", "target-ssh", "host name used by the monitors")
+	fs.StringVar(&o.User, "user", "svc", "login user")
+	fs.StringVar(&o.HostKeyFile, "host-key", "/data/ssh_host_ed25519", "host key file (created if missing)")
+	fs.StringVar(&o.KnownHostsOut, "known-hosts-out", "/shared/known_hosts", "write the host key here for the monitors")
+	fs.Parse(args)
+	o.Password = os.Getenv("DEMO_SSH_PASSWORD")
+	return demotarget.RunSSH(o)
 }
 
 func runDemoTarget(args []string) error {

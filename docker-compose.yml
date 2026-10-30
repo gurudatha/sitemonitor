@@ -24,6 +24,7 @@ x-monitor: &monitor
     ORDERS_API_TOKEN: ${ORDERS_API_TOKEN:-demo-token}
     ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-}
     LDAP_BIND_PASSWORD: ${LDAP_BIND_PASSWORD:-}  # only used when auth.providers includes ldap
+    DEMO_SSH_PASSWORD: ${DEMO_SSH_PASSWORD:-demo-ssh-password}  # remote jobs demo (target-ssh)
     GOMEMLIMIT: 200MiB          # Go GC target; keep ~20% below mem_limit
   mem_limit: 256m               # enough for ~100 sites at history_per_check: 200
   depends_on:
@@ -55,6 +56,7 @@ services:
     hostname: monitor-idc-01
     volumes:
       - ./config/idc:/etc/monitor            # node.yaml + sites.yaml (+ backups/); writable for the config API
+      - jobs-shared:/shared:ro              # known_hosts of the demo SSH server
       - certs:/certs:ro
       - idc-data:/data
     ports: ["8081:8080"]
@@ -64,6 +66,7 @@ services:
     hostname: monitor-fc-01
     volumes:
       - ./config/fc:/etc/monitor
+      - jobs-shared:/shared:ro
       - certs:/certs:ro
       - fc-data:/data
     ports: ["8082:8080"]
@@ -83,7 +86,19 @@ services:
     <<: *target
     command: ["demo-target", "-name", "target-fc-2", "-cert-days", "5", "-no-tls13"]
 
+  # Demo "remote server" for remote jobs: an SSH server that runs commands with /bin/sh.
+  target-ssh:
+    <<: *target
+    hostname: target-ssh
+    command: ["demo-ssh", "-addr", ":2222", "-name", "target-ssh", "-host-key", "/data/ssh_host_ed25519", "-known-hosts-out", "/shared/known_hosts"]
+    environment:
+      DEMO_SSH_PASSWORD: ${DEMO_SSH_PASSWORD:-demo-ssh-password}
+    volumes: [jobs-shared:/shared, ssh-data:/data]
+    tmpfs: [/tmp]          # read-only root: jobs are pushed to /tmp
+
 volumes:
+  jobs-shared:
+  ssh-data:
   certs:
   idc-data:
   fc-data:

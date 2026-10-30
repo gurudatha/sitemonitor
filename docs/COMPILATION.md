@@ -61,6 +61,30 @@ docker push registry.example.com/ops/sitemonitor:1.0.0
 Recommended in CI: sign the image (`cosign sign`), generate an SBOM
 (`syft`), and scan it (`trivy image`).
 
+### Image targets
+
+| Target | Base | Use |
+|---|---|---|
+| `runtime` (default) | Alpine + python3, perl, bash | Servers that run periodic jobs |
+| `runtime-minimal` | distroless static (no shell) | Servers with `jobs.enabled: false` |
+
+```bash
+docker build -t sitemonitor:1.0.0 .                                   # runtime
+docker build --target runtime-minimal -t sitemonitor:1.0.0-minimal .  # no interpreters
+```
+
+### Native startup hook (optional, cgo)
+
+The default build is pure Go. To include the C startup hook
+(`internal/startup/startup_hook.c`, currently a placeholder), use:
+
+```bash
+CGO_ENABLED=1 go build -tags sitemonitor_cgo -o monitor ./cmd/monitor
+```
+
+This needs gcc or clang, and a runtime image with libc. See
+[JOBS.md §5](JOBS.md#5-startup-jobs-and-the-native-startup-hook).
+
 ## 3. Offline / air-gapped builds
 
 If the build host can't reach `proxy.golang.org`, vendor the dependency
@@ -109,7 +133,7 @@ Then start both servers:
 
 ```bash
 go vet ./...                               # static checks
-go test ./...                              # unit tests (auth incl. an in-process LDAP server, configstore, config)
+go test ./...                              # unit tests (auth with an in-process LDAP server, jobs with an in-process SSH server, store, config)
 gofmt -l .                                 # must print nothing
 docker compose up -d --build               # full two-region demo
 curl -sk -u viewer:Viewer-Demo-Pass-1 https://localhost:8081/api/status | head -c 400

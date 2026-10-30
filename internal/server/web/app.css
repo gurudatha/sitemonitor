@@ -94,3 +94,16 @@ tr.clickable:hover td { background: var(--bg); }
 h2 .muted { font-weight: 400; font-size: 13px; margin-left: 6px; }
 .timeline { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .timeline time { color: var(--muted); font-variant-numeric: tabular-nums; }
+.editor-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.form-grid { display: grid; gap: 10px; min-width: min(520px, 86vw); }
+.form-grid label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+.form-grid input, .form-grid select, .form-grid textarea { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
+.form-grid fieldset { border: 1px solid var(--border); border-radius: 8px; display: grid; gap: 8px; padding: 10px; }
+.form-grid label:has(input[type=checkbox]) { display: flex; align-items: center; gap: 6px; }
+.actions { display: flex; gap: 4px; flex-wrap: wrap; }
+.actions button { font-size: 12px; padding: 2px 8px; }
+button.danger { color: var(--crit); }
+details.bins { margin-top: 10px; }
+details.bins summary { cursor: pointer; font-size: 13px; margin-bottom: 8px; }
+pre.out { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; margin: 4px 0 0; }
+.pending-merge { color: var(--warn); font-weight: 600; }

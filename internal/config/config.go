@@ -42,6 +42,46 @@ type Node struct {
 	Limits    Limits        `yaml:"limits"`
 	Auth      AuthConfig    `yaml:"auth"`
 	ConfigAPI ConfigAPIConf `yaml:"config_api"`
+	Jobs      JobsConf      `yaml:"jobs"`
+}
+
+// JobsConf configures user/admin periodic jobs: binaries run locally or on
+// remote Linux / Windows (Cygwin) servers over SSH.
+type JobsConf struct {
+	Enabled         bool                `yaml:"enabled"`
+	BinariesDir     string              `yaml:"binaries_dir"` // the one directory holding every uploaded program
+	WorkDir         string              `yaml:"work_dir"`     // per-run scratch directories (deleted after each run)
+	MaxBinarySizeMB int64               `yaml:"max_binary_size_mb"`
+	MaxConcurrent   int                 `yaml:"max_concurrent"` // jobs running at the same time
+	DefaultTimeout  time.Duration       `yaml:"default_timeout"`
+	MaxTimeout      time.Duration       `yaml:"max_timeout"`
+	MaxOutputKB     int64               `yaml:"max_output_kb"`    // stdout/stderr kept per run
+	UserMaxRunFor   time.Duration       `yaml:"user_max_run_for"` // longest window a user job may run (24h)
+	RequireApproval bool                `yaml:"require_approval"` // user jobs wait for an admin
+	Interpreters    map[string][]string `yaml:"interpreters"`     // file extension -> command prefix (local runs)
+	ExitCodes       ExitCodeMap         `yaml:"exit_codes"`
+	StartupHook     bool                `yaml:"startup_hook"` // call the (cgo) startup hook when the server comes up
+	Remote          RemoteConf          `yaml:"remote"`
+}
+
+// ExitCodeMap maps program exit codes to OK / WARN; anything else is CRIT.
+type ExitCodeMap struct {
+	OK   []int `yaml:"ok"`
+	Warn []int `yaml:"warn"`
+}
+
+type RemoteConf struct {
+	KnownHosts     string                `yaml:"known_hosts"` // OpenSSH known_hosts; host keys are always verified
+	ConnectTimeout time.Duration         `yaml:"connect_timeout"`
+	RemoteDir      string                `yaml:"remote_dir"`  // where programs are pushed (/tmp; works on Cygwin too)
+	Credentials    map[string]Credential `yaml:"credentials"` // jobs reference these by name; secrets never go through the API
+}
+
+type Credential struct {
+	User       string `yaml:"user"`
+	Password   string `yaml:"password"`    // use ${ENV}
+	PrivateKey string `yaml:"private_key"` // path to an OpenSSH private key
+	Passphrase string `yaml:"passphrase"`  // use ${ENV}
 }
 
 type NodeSelf struct {
@@ -251,6 +291,34 @@ func (n *Node) applyDefaults() {
 	setDefault(&a.LDAP.UserFilter, "(&(objectClass=user)(sAMAccountName={username}))")
 	setDefault(&a.LDAP.DisplayAttr, "displayName")
 	setDefault(&a.LDAP.Timeout, 5*time.Second)
+
+	j := &n.Jobs
+	setDefault(&j.BinariesDir, n.Node.DataDir+"/jobs/bin")
+	setDefault(&j.WorkDir, n.Node.DataDir+"/jobs/work")
+	setDefault(&j.MaxBinarySizeMB, 50)
+	setDefault(&j.MaxConcurrent, 4)
+	setDefault(&j.DefaultTimeout, 5*time.Minute)
+	setDefault(&j.MaxTimeout, 30*time.Minute)
+	setDefault(&j.MaxOutputKB, 64)
+	setDefault(&j.UserMaxRunFor, 24*time.Hour)
+	if j.Interpreters == nil {
+		j.Interpreters = map[string][]string{
+			".py":   {"python3"},
+			".pl":   {"perl"},
+			".ps1":  {"pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-File"},
+			".sh":   {"sh"},
+			".bash": {"bash"},
+		}
+	}
+	if j.ExitCodes.OK == nil {
+		j.ExitCodes.OK = []int{0}
+	}
+	if j.ExitCodes.Warn == nil {
+		j.ExitCodes.Warn = []int{1}
+	}
+	setDefault(&j.Remote.KnownHosts, n.Node.DataDir+"/jobs/known_hosts")
+	setDefault(&j.Remote.ConnectTimeout, 10*time.Second)
+	setDefault(&j.Remote.RemoteDir, "/tmp")
 }
 
 func (n *Node) validate() error {
@@ -289,7 +357,32 @@ func (n *Node) validate() error {
 	case l.DailyStatsRetention < 31*24*time.Hour:
 		return fmt.Errorf("limits.daily_stats_retention must be at least 31 days (30d uptime)")
 	}
+	if err := n.validateJobs(); err != nil {
+		return err
+	}
 	return n.validateAuth()
+}
+
+func (n *Node) validateJobs() error {
+	j := n.Jobs
+	switch {
+	case j.MaxConcurrent < 1 || j.MaxConcurrent > 100:
+		return fmt.Errorf("jobs.max_concurrent must be 1..100")
+	case j.DefaultTimeout > j.MaxTimeout:
+		return fmt.Errorf("jobs.default_timeout must be <= jobs.max_timeout")
+	case j.UserMaxRunFor <= 0 || j.UserMaxRunFor > 24*time.Hour:
+		return fmt.Errorf("jobs.user_max_run_for must be between 1s and 24h")
+	case j.MaxBinarySizeMB < 1 || j.MaxBinarySizeMB > 1024:
+		return fmt.Errorf("jobs.max_binary_size_mb must be 1..1024")
+	}
+	for name, c := range j.Remote.Credentials {
+		// The secret may come from an environment variable that is not set on
+		// every server; a credential without one fails when a job uses it.
+		if c.User == "" {
+			return fmt.Errorf("jobs.remote.credentials.%s: user is required", name)
+		}
+	}
+	return nil
 }
 
 func (n *Node) validateAuth() error {

@@ -36,6 +36,17 @@ Key properties:
   success/failure) and its hourly and daily totals in an embedded
   SQLite database. The dashboard and `/metrics` only read those stored
   values, and a year of daily uptime is kept.
+- **Periodic jobs.** Users and admins upload their own programs
+  (Python, Perl, PowerShell, shell or any executable) into one directory
+  and run them on an interval (1 min to 6 h) or when the server comes
+  up. Jobs run locally or on remote Linux / Windows (Cygwin) servers over
+  SSH: the program is pushed, run, and its return value collected.
+  - User jobs run immediately, for at most 24 hours.
+  - Merging a user job into the admin's periodic activities needs admin
+    approval.
+  - A placeholder for a native (cgo) startup hook is included.
+- **Every feature has an API**, usable by agents with bearer tokens and
+  described at `/api/openapi.json`.
 - **Incidents, not alert storms.** Repeats of the same problem are
   collapsed into one incident that keeps the first date. Clearing and
   re-appearance are both recorded.
@@ -107,7 +118,7 @@ curl -k -X POST https://localhost:9441/admin/toggle   # fc-orders-api returns 50
 ## Repository layout
 
 ```
-cmd/monitor/            single binary: run | witness | gen-certs | demo-target
+cmd/monitor/            single binary: run | witness | gen-certs | demo-target | demo-ssh | hash-password
 internal/config/        node.yaml + sites.yaml loading and validation
 internal/checks/        availability, tls, cert, headers, api checks
 internal/scheduler/     jittered scheduling, bounded worker pool, per-host limits
@@ -118,6 +129,8 @@ internal/store/         SQLite database: results, per-check counters, hourly/dai
 internal/server/        peer API (mTLS), dashboard + config API, /metrics, embedded web UI
 internal/auth/          login: local bcrypt users or Active Directory (LDAP), sessions, roles
 internal/configstore/   validated, atomic, backed-up edits of sites.yaml / node.yaml
+internal/jobs/          periodic jobs: programs, schedules, local + SSH execution, merge workflow, peer sync
+internal/startup/       native (cgo) startup hook placeholder + pure-Go stub
 internal/certs/         private CA + mTLS certificate generation
 internal/demotarget/    fake websites for the demo
 config/idc/, config/fc/ node.yaml + sites.yaml for each server (writable by the config API)
@@ -130,6 +143,7 @@ docs/                   design, compilation and deployment guides
 |---|---|
 | [docs/DESIGN.md](docs/DESIGN.md) | Architecture, checks, load limits, two-region sync and failover, security, metrics |
 | [docs/COMPILATION.md](docs/COMPILATION.md) | Prerequisites, building the binary and the container image, offline builds |
+| [docs/JOBS.md](docs/JOBS.md) | Periodic jobs: programs, schedules, remote servers, merge workflow, startup hook, safety |
 | [docs/API.md](docs/API.md) | Every HTTP endpoint: login, status, configuration API, roles, examples |
 | [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) | Local users (POC) vs Active Directory (production), roles, lockout, audit |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment across IDC, FC and the witness; certificates, configuration, operations runbook, troubleshooting |

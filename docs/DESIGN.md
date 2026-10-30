@@ -471,7 +471,40 @@ If raw per-result detail must be kept for audit, add a PostgreSQL or
 TimescaleDB sink partitioned by month, and size it from the first row
 of the table above.
 
-## 11. Known limitations and next steps
+## 11. Periodic jobs and the API for agents
+
+Periodic jobs are described in detail in [JOBS.md](JOBS.md). Their
+design:
+- **One abstraction for all of them.** A `Job` has a scope (user or
+  admin), a status, a schedule (interval or startup), a program,
+  arguments, and an optional SSH target. The same type covers a user's
+  24-hour job, an admin activity, a remote job and a startup job.
+- **Runs reuse the check pipeline.** A run becomes a `checks.Result` for
+  site `job:<name>`. It therefore goes through the same database counters,
+  incident evaluation, replication and metrics as website checks, with no
+  separate run store.
+- **Ownership:** a job runs on the server that owns its region, so jobs
+  fail over with the region.
+- **Peer sync:** definitions, program files (content-addressed by SHA-256)
+  and API tokens use last-writer-wins records with tombstones. They are
+  pushed on change, and the heartbeat hash triggers a re-sync if the
+  servers ever differ.
+- **Execution safety:**
+  - no shell for local runs
+  - the program's SHA-256 is pinned
+  - a scratch directory and minimal environment for each run
+  - the whole process group is killed on timeout
+  - output is capped and runs are concurrency-bounded
+  - remote host keys must be verified
+  - credentials are referenced by name only
+
+**API for agents:** every endpoint is declared once in a route table
+(`internal/server/routes.go`, `jobsapi.go`). That table registers the
+handlers **and** generates `/api/openapi.json`, so the published
+description can't drift from what the server serves. Agents
+authenticate with API tokens; only a token's hash is stored.
+
+## 12. Known limitations and next steps
 
 | Limitation | Suggested next step |
 |---|---|
