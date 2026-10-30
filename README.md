@@ -66,10 +66,14 @@ Key properties:
   backups, immediate apply and automatic sync to the peer server.
 - **Everything is configurable in YAML.** Server and peer names,
   goroutine and worker pools, queues, size limits, timeouts.
-- **Dashboard with tabs.** A minimal landing page of KPI tiles; clicking
-  a tile lists the matching items and their recent events. Websites,
-  Certificates, Incidents, Events, User jobs and Clusters each have
-  their own tab, and every job has its own detail page.
+- **Dashboard with tabs.** The landing page has a single row of KPI
+  tiles.
+  - Clicking a tile lists the matching items and their recent events.
+  - With no tile selected, it shows the critical errors and charts of
+    events and failed requests per day, or per hour for a chosen day.
+  - Websites, Certificates, Incidents, Events, User jobs, Clusters and
+    Info each have their own tab, and every job has its own detail page.
+  - Info includes an extensive argument-formatting reference.
 - **Secure web UI.** Served over HTTPS with a strict Content Security
   Policy and login, plus Prometheus `/metrics`.
 

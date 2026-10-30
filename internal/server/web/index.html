@@ -42,6 +42,7 @@
       <a href="#/events" data-tab="events">Events</a>
       <a href="#/jobs" data-tab="jobs" id="nav-jobs" hidden>User jobs <span class="count" id="nav-jobs-count"></span></a>
       <a href="#/clusters" data-tab="clusters">Clusters</a>
+      <a href="#/info" data-tab="info">Info</a>
     </nav>
 
     <main>
@@ -57,7 +58,36 @@
           <h3 class="sub-h">Related events</h3>
           <ol class="events compact" id="sel-events"></ol>
         </section>
-        <p class="muted hint" id="sel-hint">Select a tile to list its items.</p>
+        <!-- shown when no tile is selected -->
+        <div id="overview">
+          <section class="panel">
+            <header class="selection-head">
+              <h2>Critical errors <span class="muted" id="crit-summary"></span></h2>
+              <a class="link" href="#/incidents?status=OPEN">All incidents →</a>
+            </header>
+            <div class="table-wrap"><table id="crit-table"><thead><tr><th>Problem</th><th>Message</th><th>Since</th><th>Seen</th><th>Reported by</th></tr></thead><tbody></tbody></table></div>
+          </section>
+
+          <section class="panel">
+            <header class="selection-head">
+              <h2 id="chart-title">Activity</h2>
+              <div class="chart-controls" role="group" aria-label="Time range">
+                <label>Per day <select id="ch-days"><option value="7">last 7 days</option><option value="30" selected>last 30 days</option><option value="90">last 90 days</option></select></label>
+                <label>Per hour <input type="date" id="ch-day"></label>
+                <button id="ch-back" class="link" hidden>← back to days</button>
+              </div>
+            </header>
+            <p class="muted chart-hint" id="chart-hint">Select a day's bar to see it per hour.</p>
+            <h3 class="chart-h">Events by severity</h3>
+            <div class="legend" id="lg-events"></div>
+            <div class="chart" id="ch-events"></div>
+            <h3 class="chart-h">Critical errors: failed requests (website checks and jobs)</h3>
+            <div class="chart" id="ch-fail"></div>
+            <details class="table-view"><summary>Show as table</summary>
+              <div class="table-wrap"><table id="ch-table"><thead><tr><th id="ch-col">Day</th><th>Critical events</th><th>Warning events</th><th>OK events</th><th>Requests</th><th>Failed requests</th></tr></thead><tbody></tbody></table></div>
+            </details>
+          </section>
+        </div>
       </section>
 
       <!-- ============ Websites ============ -->
@@ -215,6 +245,336 @@
           </div>
           <h3 class="sub-h">Runs</h3>
           <div id="jd-runs"></div>
+        </div>
+      </section>
+
+
+      <!-- ============ Info: help and argument reference ============ -->
+      <section class="view info" data-view="info" hidden>
+        <div class="info-layout">
+          <nav class="toc" aria-label="On this page">
+            <strong>On this page</strong>
+            <a href="#/info?s=i-start">Getting started</a>
+            <a href="#/info?s=i-schedule">Schedules, limits, results</a>
+            <a href="#/info?s=i-rules">How arguments are passed</a>
+            <a href="#/info?s=i-chars">Special characters</a>
+            <a href="#/info?s=i-python">Python</a>
+            <a href="#/info?s=i-perl">Perl</a>
+            <a href="#/info?s=i-shell">Shell (sh / bash)</a>
+            <a href="#/info?s=i-pwsh">PowerShell</a>
+            <a href="#/info?s=i-batch">Windows batch (.bat / .cmd)</a>
+            <a href="#/info?s=i-exe">Executables (.exe, Linux)</a>
+            <a href="#/info?s=i-api">Arguments in API calls</a>
+            <a href="#/info?s=i-pitfalls">Common pitfalls</a>
+            <a href="#/info?s=i-agents">API for agents</a>
+            <a href="#/info?s=i-about">About this server</a>
+          </nav>
+
+          <div class="info-body">
+            <h2 id="i-start">Getting started with user jobs</h2>
+            <ol class="steps">
+              <li><b>Upload the program</b>: <i>User jobs → Add job &amp; programs → Upload program</i>. Python (<code>.py</code>), Perl (<code>.pl</code>), PowerShell (<code>.ps1</code>), shell (<code>.sh</code>, <code>.bash</code>), batch (<code>.bat</code>, <code>.cmd</code>) or an executable. File names may contain letters, digits, <code>.</code> <code>_</code> <code>-</code> (no spaces).</li>
+              <li><b>Add the job</b> on the same page: choose the program, type the <b>arguments one per line</b>, pick <b>Every</b> (interval) and <b>For</b> (how long, at most 24 hours for user jobs), and <b>Where</b> it runs.</li>
+              <li><b>Check it</b>: the job's page opens. Press <b>Run now</b> and read the output. It then runs on its own; past runs are under <i>Results history</i>.</li>
+              <li><b>Keep it permanently</b>: press <b>Request merge</b>. An admin can approve it into the admin's periodic activities (no 24-hour limit).</li>
+            </ol>
+            <p class="note"><b>Where can it run?</b> The monitor servers are Linux. Scripts and Linux programs (built for Alpine / musl, or statically linked) run <i>on the monitor server</i>. Windows <code>.exe</code>, <code>.bat</code> and Windows PowerShell scripts must run <i>on a remote server</i> with OS <b>Windows (Cygwin)</b>; an admin configures the credential and host key first.</p>
+
+            <h2 id="i-schedule">Schedules, limits and results</h2>
+            <table class="ref">
+              <tr><th>Every</th><td>1m, 2m, 5m, 10m, 15m, 20m, 30m, 60m, 1h, 2h, 4h, 6h, or <i>once, when the server comes up</i></td></tr>
+              <tr><th>For</th><td>1h, 2h, 4h, 8h, 12h or 24h for user jobs (the window starts when the job is added or edited). Admin activities may have no end.</td></tr>
+              <tr><th>Timeout</th><td>Default 5m, at most 30m, never longer than the interval. On timeout the program and all its child processes are stopped.</td></tr>
+              <tr><th>Exit code</th><td><span class="badge s-OK">0 = OK</span> <span class="badge s-WARN">1 = WARN</span> <span class="badge s-CRIT">anything else = CRIT</span> (the Nagios plugin convention). Two failures in a row open an incident.</td></tr>
+              <tr><th>Output</th><td>stdout and stderr are kept (64 KB each per run) and shown on the job's page.</td></tr>
+              <tr><th>Environment</th><td>A fresh empty working directory per run (also <code>HOME</code> and <code>TMPDIR</code>), <code>PATH</code>, <code>LANG=C.UTF-8</code>, and <code>SITEMONITOR_JOB</code>, <code>SITEMONITOR_RUN_ID</code>, <code>SITEMONITOR_NODE</code>. No other variables or secrets.</td></tr>
+              <tr><th>Arguments</th><td>At most 32 arguments, each at most 1024 characters, no NUL characters.</td></tr>
+            </table>
+
+            <h2 id="i-rules">How arguments are passed</h2>
+            <ul class="rules">
+              <li><b>One line = one argument, exactly as typed.</b> Spaces inside a line stay inside that argument. Leading and trailing spaces are kept. Empty lines are ignored (an empty argument is only possible through the API).</li>
+              <li><b>No shell is involved.</b> Nothing is expanded or interpreted: <code>$HOME</code>, <code>*.log</code>, <code>$(cmd)</code>, <code>`cmd`</code>, <code>;</code> <code>&amp;</code> <code>|</code> <code>&gt;</code> and quotes all arrive as plain text. <b>Do not add quotes or escapes</b>: they would become part of the argument.</li>
+              <li><b>Remote Linux and Cygwin servers</b> receive exactly the same arguments: SiteMonitor quotes each one safely for the remote shell.</li>
+              <li><b>Windows programs started through Cygwin</b> receive them through Windows command-line rules; see the batch, PowerShell and <code>.exe</code> sections for the few characters to avoid.</li>
+              <li>Verified for Python, Perl and sh, locally and over SSH, with every example in the table below (automated test <code>internal/jobs/args_test.go</code>). The Windows notes follow Windows' documented rules; test Windows jobs with <b>Run now</b>.</li>
+            </ul>
+
+            <h2 id="i-chars">Special characters: what to type</h2>
+            <p class="muted">Type the second column as one line in <i>Arguments</i>. The program receives exactly the same text (shown between brackets).</p>
+            <div class="table-wrap">
+            <table class="ref">
+              <thead><tr><th>Purpose</th><th>Type this (one line)</th><th>Program receives</th><th>Windows batch / powershell.exe note</th></tr></thead>
+              <tbody>
+                <tr><td>Spaces</td><td><code>hello world</code></td><td><code>[hello world]</code>: one argument</td><td>OK</td></tr>
+                <tr><td>Double quotes</td><td><code>say "hi"</code></td><td><code>[say "hi"]</code></td><td>Batch: may break. Windows PowerShell 5.1: may lose the quotes. Avoid</td></tr>
+                <tr><td>Single quote</td><td><code>it's</code></td><td><code>[it's]</code></td><td>OK</td></tr>
+                <tr><td>Dollar / variables</td><td><code>$HOME</code> &nbsp; <code>${PATH}</code></td><td>the literal text, not expanded</td><td>OK (PowerShell <code>-File</code> does not expand)</td></tr>
+                <tr><td>Command substitution</td><td><code>$(whoami)</code> &nbsp; <code>`id`</code></td><td>the literal text, not run</td><td>OK</td></tr>
+                <tr><td>Windows path</td><td><code>C:\Program Files\App</code></td><td><code>[C:\Program Files\App]</code>: type single backslashes</td><td>OK</td></tr>
+                <tr><td>UNC path</td><td><code>\\server\share</code></td><td><code>[\\server\share]</code></td><td>OK</td></tr>
+                <tr><td>Wildcards</td><td><code>*.log</code> &nbsp; <code>a?b[c]</code></td><td>the literal pattern (your program must expand it if needed)</td><td>OK</td></tr>
+                <tr><td>Separators / pipes</td><td><code>one;two</code> &nbsp; <code>a&amp;b|c</code></td><td>the literal text</td><td><b>Batch: avoid</b> <code>&amp; | &lt; &gt; ^</code></td></tr>
+                <tr><td>Redirection</td><td><code>&lt;in &gt;out</code></td><td>the literal text</td><td><b>Batch: avoid</b></td></tr>
+                <tr><td>Percent</td><td><code>100%</code></td><td><code>[100%]</code></td><td><b>Batch: avoid</b> <code>%</code> (variable expansion)</td></tr>
+                <tr><td>Exclamation</td><td><code>!important</code></td><td><code>[!important]</code></td><td>Batch with delayed expansion: avoid</td></tr>
+                <tr><td>Hash</td><td><code>#not-a-comment</code></td><td><code>[#not-a-comment]</code></td><td>OK</td></tr>
+                <tr><td>Option with value</td><td><code>--name=value</code></td><td><code>[--name=value]</code></td><td>OK</td></tr>
+                <tr><td>Option and value as two arguments</td><td><code>--name</code><br><code>value with spaces</code></td><td><code>[--name] [value with spaces]</code></td><td>OK</td></tr>
+                <tr><td>Leading dash</td><td><code>-v</code></td><td><code>[-v]</code></td><td>PowerShell: binds to a parameter whose name starts with <code>v</code> if the script has one</td></tr>
+                <tr><td>Negative number</td><td><code>--threshold=-5</code></td><td><code>[--threshold=-5]</code></td><td>Prefer the <code>=</code> form; many parsers read <code>-5</code> as an option</td></tr>
+                <tr><td>JSON</td><td><code>{"k": "v", "n": 1}</code></td><td>the exact JSON text</td><td>Batch / PS 5.1: quotes may be mangled. Pass a file or Base64 instead</td></tr>
+                <tr><td>Regular expression</td><td><code>^\d+(\.\d+)?$</code></td><td>the exact regex</td><td>Batch: avoid <code>^ | &lt; &gt;</code></td></tr>
+                <tr><td>URL with query</td><td><code>https://x.example/a?b=1&amp;c=2#frag</code></td><td>the exact URL</td><td><b>Batch: avoid</b> (<code>&amp;</code>)</td></tr>
+                <tr><td>Unicode</td><td><code>ünïcödé ✓ 日本</code></td><td>the same UTF-8 text</td><td>Arrives as Unicode; set the console to UTF-8 to print it (see PowerShell)</td></tr>
+                <tr><td>Padding</td><td><code>␠␠padded␠␠</code> (spaces)</td><td><code>[  padded  ]</code>: spaces kept</td><td>OK</td></tr>
+                <tr><td>Empty argument</td><td>(not possible in the form)</td><td><code>[]</code> via the API: <code>"args": [""]</code></td><td>Some Windows programs drop it</td></tr>
+                <tr><td>Newline inside one argument</td><td>(not possible in the form)</td><td>via the API: <code>"line1\nline2"</code></td><td>Avoid for Windows programs</td></tr>
+              </tbody>
+            </table>
+            </div>
+
+            <h2 id="i-python">Python (<code>.py</code>, run with <code>python3</code>)</h2>
+            <div class="two-col">
+              <div><h4>Arguments typed in the form</h4><pre class="code">--url
+https://shop.example/api?x=1&amp;y=2
+--max-ms=800
+--label
+Checkout "fast path" (EU)</pre>
+                <h4>What the script receives</h4><pre class="code">sys.argv[1:] == [
+  "--url",
+  "https://shop.example/api?x=1&amp;y=2",
+  "--max-ms=800",
+  "--label",
+  'Checkout "fast path" (EU)',
+]</pre></div>
+              <div><h4>Script</h4><pre class="code">import argparse, sys, urllib.request, time
+
+p = argparse.ArgumentParser()
+p.add_argument("--url", required=True)
+p.add_argument("--max-ms", type=int, default=1000)
+p.add_argument("--label", default="")
+a = p.parse_args()          # reads sys.argv[1:]
+
+t = time.monotonic()
+urllib.request.urlopen(a.url, timeout=10).read()
+ms = (time.monotonic() - t) * 1000
+print(f"{a.label}: {ms:.0f} ms")
+sys.exit(0 if ms &lt;= a.max_ms else 1)   # 1 = WARN</pre></div>
+            </div>
+            <ul class="tips">
+              <li><b>Negative values</b>: argparse treats <code>-5</code> as an option. Use <code>--threshold=-5</code>, or put <code>--</code> on its own line before positional values that start with <code>-</code>.</li>
+              <li>Arguments are already Unicode <code>str</code>; nothing to decode.</li>
+              <li>Exit with <code>sys.exit(0|1|2)</code>; an uncaught exception exits with 1 (WARN). Use <code>sys.exit(2)</code> for CRIT.</li>
+            </ul>
+
+            <h2 id="i-perl">Perl (<code>.pl</code>, run with <code>perl</code>)</h2>
+            <div class="two-col">
+              <div><h4>Arguments typed in the form</h4><pre class="code">--path
+C:\Logs\app *.log
+--pattern
+ERROR|FATAL
+--days=7</pre>
+                <h4>What the script receives</h4><pre class="code">@ARGV = ('--path', 'C:\Logs\app *.log',
+         '--pattern', 'ERROR|FATAL', '--days=7')</pre></div>
+              <div><h4>Script</h4><pre class="code">use strict; use warnings;
+use Getopt::Long;
+
+my ($path, $pattern, $days) = ('', '', 1);
+GetOptions('path=s' =&gt; \$path, 'pattern=s' =&gt; \$pattern,
+           'days=i' =&gt; \$days) or exit 2;
+
+# $pattern is plain text from the job; use it as a regex on purpose,
+# or quote it with \Q...\E to match it literally:
+my $re = qr/$pattern/;
+print "checking $path for $re (last $days days)\n";
+exit 0;</pre></div>
+            </div>
+            <ul class="tips">
+              <li>Perl does <b>not</b> expand wildcards in <code>@ARGV</code>; use <code>glob()</code> yourself if you pass a pattern.</li>
+              <li>Non-ASCII arguments arrive as UTF-8 bytes: add <code>use Encode; my @args = map { decode('UTF-8', $_) } @ARGV;</code> if you need characters.</li>
+            </ul>
+
+            <h2 id="i-shell">Shell scripts (<code>.sh</code> with <code>sh</code>, <code>.bash</code> with <code>bash</code>)</h2>
+            <div class="two-col">
+              <div><h4>Arguments typed in the form</h4><pre class="code">/var/log/my app
+*.log
+$(rm -rf /)</pre>
+                <h4>What the script receives</h4><pre class="code">$1 = /var/log/my app
+$2 = *.log
+$3 = $(rm -rf /)      # just text, never executed</pre></div>
+              <div><h4>Script: always quote <code>"$1"</code> and <code>"$@"</code></h4><pre class="code">#!/bin/sh
+dir="$1"; pattern="$2"
+
+# RIGHT: quoted, so spaces and * stay as given
+for a in "$@"; do printf 'arg: [%s]\n' "$a"; done
+find "$dir" -name "$pattern" -mtime -1 | head
+
+# WRONG: unquoted $1 splits "/var/log/my app" into two words
+#        and an unquoted $2 is expanded as a glob
+# ls $1/$2
+
+# never pass arguments through eval / sh -c "$1"
+exit 0</pre></div>
+            </div>
+            <ul class="tips">
+              <li>SiteMonitor never interprets the arguments, but <b>your script can</b>: quote every expansion (<code>"$var"</code>), avoid <code>eval</code>, and use <code>--</code> before arguments that could start with <code>-</code> (<code>rm -- "$f"</code>).</li>
+              <li>Alpine's <code>sh</code> is BusyBox <code>ash</code>; use the <code>.bash</code> extension for bash features (arrays, <code>[[ ]]</code>).</li>
+            </ul>
+
+            <h2 id="i-pwsh">PowerShell (<code>.ps1</code>)</h2>
+            <p>Local and remote Linux: <code>pwsh -NoLogo -NoProfile -NonInteractive -File script.ps1 &lt;args&gt;</code>. Windows (Cygwin): <code>powershell.exe … -ExecutionPolicy Bypass -File script.ps1 &lt;args&gt;</code>. With <code>-File</code>, arguments are <b>plain strings, never evaluated</b> (no <code>$env:</code>, no sub-expressions).</p>
+            <div class="two-col">
+              <div><h4>Arguments typed in the form</h4><pre class="code">-ComputerName
+db-01.corp.local
+-Services
+Spooler,W32Time
+-MaxAgeHours
+6</pre>
+                <h4>Binding in the script</h4><pre class="code">$ComputerName = 'db-01.corp.local'
+$Services     = 'Spooler,W32Time'   # one string
+$MaxAgeHours  = 6                   # converted to [int]</pre></div>
+              <div><h4>Script</h4><pre class="code">param(
+  [Parameter(Mandatory)] [string] $ComputerName,
+  [string] $Services = '',
+  [int]    $MaxAgeHours = 24
+)
+[Console]::OutputEncoding = [Text.Encoding]::UTF8
+$names = $Services -split ','          # split lists yourself
+$bad = foreach ($n in $names) {
+  $s = Get-Service -Name $n -ErrorAction SilentlyContinue
+  if (-not $s -or $s.Status -ne 'Running') { $n }
+}
+if ($bad) { "Not running: $($bad -join ', ')"; exit 2 }
+"All running on $ComputerName"; exit 0</pre></div>
+            </div>
+            <ul class="tips">
+              <li><b>Named parameters</b>: put <code>-Name</code> and its value on <b>separate lines</b>, or use <code>-Name:value</code> on one line. A line <code>-Name value</code> becomes one argument and will not bind.</li>
+              <li><b>Arrays</b>: <code>-File</code> passes <code>a,b,c</code> as one string. Split it in the script (as above).</li>
+              <li><b>Switches</b>: a line <code>-Verbose</code> or <code>-Force</code> works; to turn a switch off use <code>-Force:$false</code> on one line.</li>
+              <li><b>Arguments starting with <code>-</code></b> that are values (e.g. <code>-5</code>) can be mistaken for parameter names: use <code>-Offset:-5</code>.</li>
+              <li><b>Windows PowerShell 5.1</b> (<code>powershell.exe</code>) may strip or split <b>embedded double quotes</b> in arguments. Avoid <code>"</code> in values; for structured data pass Base64 and decode it: <code>[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($Data)) | ConvertFrom-Json</code>.</li>
+              <li>Exit codes: <code>exit 0/1/2</code>. An unhandled terminating error exits with 1 (WARN); use <code>$ErrorActionPreference='Stop'</code> plus <code>try { … } catch { exit 2 }</code> for CRIT.</li>
+            </ul>
+
+            <h2 id="i-batch">Windows batch (<code>.bat</code>, <code>.cmd</code>, remote Windows only)</h2>
+            <p>Started as <code>cmd.exe /c script.bat &lt;args&gt;</code>. <b><code>cmd.exe</code> re-reads the command line</b>, so some characters keep a special meaning even though SiteMonitor passes them safely.</p>
+            <div class="two-col">
+              <div><h4>Safe arguments</h4><pre class="code">C:\Data\Reports
+monthly report.xlsx
+--keep=30
+D:\Backup Folder</pre>
+                <h4>Avoid in batch arguments</h4><pre class="code">&amp;  |  &lt;  &gt;  ^      (command operators)
+%NAME%  100%       (variable expansion)
+!                  (with delayed expansion)
+"embedded quotes"</pre></div>
+              <div><h4>Script</h4><pre class="code">@echo off
+setlocal
+rem %~1 removes surrounding quotes added for spaces
+set "SRC=%~1"
+set "FILE=%~2"
+if not exist "%SRC%\%FILE%" (
+  echo missing: %SRC%\%FILE%
+  exit /b 2
+)
+echo found %SRC%\%FILE%
+exit /b 0</pre></div>
+            </div>
+            <ul class="tips">
+              <li>Always read arguments as <code>"%~1"</code> (quoted, with <code>~</code>) so paths with spaces work.</li>
+              <li>If you need URLs, regexes or any of the characters above, write the job in PowerShell or as an <code>.exe</code> instead of a batch file.</li>
+              <li>End with <code>exit /b &lt;code&gt;</code>; without it the exit code of the last command is used.</li>
+            </ul>
+
+            <h2 id="i-exe">Executables (<code>.exe</code> on Windows, native Linux programs)</h2>
+            <ul class="tips">
+              <li><b>Linux programs</b> (no extension, or any extension not listed above) are started directly with the arguments as an array (<code>argv</code>): every character in the table works. Build them for Alpine/musl or statically (Go: <code>CGO_ENABLED=0</code>; Rust: <code>--target x86_64-unknown-linux-musl</code>).</li>
+              <li><b>Windows <code>.exe</code> through Cygwin</b>: Cygwin turns the arguments into a Windows command line using the standard Microsoft quoting rules. Programs that read arguments the normal way (<code>main(argc, argv)</code>, <code>wmain</code>, .NET <code>string[] args</code>, Go <code>os.Args</code>, Python) receive them exactly, including spaces, quotes and backslashes.</li>
+              <li>A few programs parse the raw command line themselves (some installers, <code>msiexec</code>, <code>robocopy</code> options); test them with <b>Run now</b>.</li>
+              <li><b>Paths</b>: Windows programs need Windows paths (<code>C:\Data</code>), not Cygwin paths (<code>/cygdrive/c/Data</code>). Cygwin does not translate arguments for native programs.</li>
+            </ul>
+            <div class="two-col">
+              <div><h4>Arguments typed in the form</h4><pre class="code">/scan
+C:\Program Files\Vendor\data
+/threshold:90
+/tag:"nightly run"</pre></div>
+              <div><h4>What a C# / .NET program receives</h4><pre class="code">args[0] = "/scan"
+args[1] = "C:\Program Files\Vendor\data"
+args[2] = "/threshold:90"
+args[3] = "/tag:\"nightly run\""   // quotes are part of the value</pre></div>
+            </div>
+
+            <h2 id="i-api">Arguments in API calls (agents, scripts)</h2>
+            <p>In the API, <code>args</code> is a JSON array of strings. JSON has its own escaping: <b>backslash</b> becomes <code>\\</code>, <b>double quote</b> becomes <code>\"</code>, tab <code>\t</code>, newline <code>\n</code>. Everything else is written as is.</p>
+            <div class="table-wrap"><table class="ref">
+              <thead><tr><th>Program should receive</th><th>JSON in <code>"args"</code></th></tr></thead>
+              <tbody>
+                <tr><td><code>C:\Program Files\App</code></td><td><code>"C:\\Program Files\\App"</code></td></tr>
+                <tr><td><code>\\server\share</code></td><td><code>"\\\\server\\share"</code></td></tr>
+                <tr><td><code>say "hi"</code></td><td><code>"say \"hi\""</code></td></tr>
+                <tr><td><code>^\d+(\.\d+)?$</code></td><td><code>"^\\d+(\\.\\d+)?$"</code></td></tr>
+                <tr><td><code>{"k": "v"}</code></td><td><code>"{\"k\": \"v\"}"</code></td></tr>
+                <tr><td><code>it's $HOME &amp; *.log</code></td><td><code>"it's $HOME &amp; *.log"</code> (no escaping needed)</td></tr>
+              </tbody>
+            </table></div>
+            <h4>bash / WSL: keep the JSON in a file (no shell quoting problems)</h4>
+<pre class="code">cat &gt; job.json &lt;&lt;'JSON'
+{
+  "name": "win-report",
+  "binary": "report.exe",
+  "args": ["/out", "C:\\Reports\\daily report.csv", "/filter:status=open&amp;team=ops"],
+  "schedule": {"type": "interval", "every": "1h", "run_for": "12h"},
+  "target": {"host": "10.20.0.15", "port": 22, "os": "windows-cygwin", "credential": "win-cygwin"}
+}
+JSON
+curl -sk -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+     --data-binary @job.json https://monitor:8080/api/jobs</pre>
+            <h4>PowerShell: build an object and let <code>ConvertTo-Json</code> escape it</h4>
+<pre class="code">$job = @{
+  name     = 'disk-check'
+  binary   = 'disk.py'
+  args     = @('--path', 'C:\Data\My Files', '--pattern', '*.tmp', '--note', 'it''s "urgent"')
+  schedule = @{ type = 'interval'; every = '15m'; run_for = '8h' }
+}
+$body = $job | ConvertTo-Json -Depth 5
+Invoke-RestMethod -Method Post -Uri https://monitor:8080/api/jobs `
+  -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json' -Body $body
+# PowerShell single-quoted strings: no escaping except '' for a single quote
+# (PowerShell 7: add -SkipCertificateCheck for the demo certificate)</pre>
+            <h4>Python agent</h4>
+<pre class="code">import requests   # json= escapes everything correctly
+requests.post("https://monitor:8080/api/jobs", verify="ca.crt",
+  headers={"Authorization": f"Bearer {token}"},
+  json={"name": "regex-check", "binary": "grep.pl",
+        "args": ["--pattern", r"^\d+(\.\d+)?$", "--file", r"C:\Logs\app.log"],
+        "schedule": {"type": "interval", "every": "30m", "run_for": "24h"}})</pre>
+
+            <h2 id="i-pitfalls">Common pitfalls</h2>
+            <div class="table-wrap"><table class="ref">
+              <thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead>
+              <tbody>
+                <tr><td>Program gets <code>"value"</code> with the quotes</td><td>Quotes typed around a value in the form</td><td>Type the value without quotes; one line is already one argument</td></tr>
+                <tr><td><code>--name value</code> not recognised</td><td>Option and value on one line = one argument</td><td>Two lines (<code>--name</code> / <code>value</code>) or <code>--name=value</code></td></tr>
+                <tr><td><code>$HOME</code> or <code>*.log</code> not expanded</td><td>No shell is used, on purpose</td><td>Expand inside the program (<code>os.path.expanduser</code>, <code>glob</code>, <code>$env:</code>)</td></tr>
+                <tr><td>Path with spaces split in two</td><td>Unquoted <code>$1</code> in a shell script, or <code>%1</code> in batch</td><td>Use <code>"$1"</code> / <code>"%~1"</code></td></tr>
+                <tr><td><code>-5</code> treated as an option</td><td>Argument parser rule</td><td><code>--threshold=-5</code> (or <code>-Offset:-5</code> in PowerShell)</td></tr>
+                <tr><td>Batch job stops at <code>&amp;</code> or loses <code>%</code></td><td><code>cmd.exe</code> re-parses arguments</td><td>Avoid those characters, or use PowerShell / an <code>.exe</code></td></tr>
+                <tr><td>Garbled non-ASCII output from Windows</td><td>Console code page</td><td><code>[Console]::OutputEncoding = [Text.Encoding]::UTF8</code> / <code>chcp 65001</code></td></tr>
+                <tr><td>"cannot run python3 / pwsh"</td><td>Interpreter not installed on that server</td><td>Run remotely, or ask the admin for an image with it</td></tr>
+                <tr><td>Job stopped: "changed since approval"</td><td>An admin activity's program was replaced</td><td>An admin presses <b>Re-approve program</b> on the job's page</td></tr>
+              </tbody>
+            </table></div>
+
+            <h2 id="i-agents">API for agents</h2>
+            <ul class="tips">
+              <li>Every feature has an endpoint. The machine-readable description is at <a class="link" href="api/openapi.json" target="_blank" rel="noopener">/api/openapi.json</a> (OpenAPI 3.1, with the role each call needs).</li>
+              <li>An admin creates a token for the agent: <code>POST /api/tokens {"name":"my-agent","role":"operator"}</code>. The agent sends <code>Authorization: Bearer &lt;token&gt;</code>.</li>
+              <li>Useful calls: <code>GET /api/summary</code>, <code>GET /api/status</code>, <code>GET /api/incidents?status=open</code>, <code>GET /api/events</code>, <code>POST /api/jobs</code>, <code>POST /api/jobs/{id}/run?wait=true</code>, <code>GET /api/jobs/runs</code>.</li>
+            </ul>
+
+            <h2 id="i-about">About this server</h2>
+            <dl class="kv" id="about"></dl>
+          </div>
         </div>
       </section>
 

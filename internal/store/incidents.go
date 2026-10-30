@@ -187,8 +187,11 @@ func (s *Store) AddEvent(e Event) bool {
 		}
 		_, err := tx.Exec(`INSERT INTO events (id, time_ms, node, kind, severity, site, check_name, key, message)
 			VALUES (?,?,?,?,?,?,?,?,?)`, e.ID, ms(e.Time), e.Node, e.Kind, e.Severity, e.Site, e.Check, e.Key, e.Message)
-		stored = err == nil
-		return err
+		if err != nil {
+			return err
+		}
+		stored = true
+		return countEventTx(tx, e) // dashboard chart counter
 	})
 	if err != nil {
 		logErr("store event", err)

@@ -143,3 +143,46 @@ func TestImportLegacySnapshot(t *testing.T) {
 		t.Fatal("results.json must be renamed after import")
 	}
 }
+
+func TestActivityCountersByLocalDayAndHour(t *testing.T) {
+	s := open(t, t.TempDir())
+	ist := time.FixedZone("IST", 330*60) // +05:30: local days differ from UTC days
+	day := time.Date(2026, 10, 29, 0, 0, 0, 0, ist)
+	// 23:30 local on the 29th = 18:00 UTC; 00:30 local on the 30th = 19:00 UTC
+	s.AddResult(result("a", "availability", "OK", day.Add(23*time.Hour+30*time.Minute), 1))
+	s.AddResult(result("a", "availability", "CRIT", day.Add(24*time.Hour+30*time.Minute), 1))
+	s.AddEvent(Event{ID: "e1", Time: day.Add(23*time.Hour + 40*time.Minute), Kind: "ALERT", Severity: "CRIT", Message: "x"})
+	s.AddEvent(Event{ID: "e2", Time: day.Add(24*time.Hour + 40*time.Minute), Kind: "INFO", Severity: "OK", Message: "y"})
+
+	days := s.Activity(day, 24*time.Hour, 2)
+	if days[0].Label != "2026-10-29" || days[0].Requests != 1 || days[0].Failures != 0 || days[0].Events["CRIT"] != 1 {
+		t.Fatalf("local day 29: %+v", days[0])
+	}
+	if days[1].Requests != 1 || days[1].Failures != 1 || days[1].Events["OK"] != 1 {
+		t.Fatalf("local day 30: %+v", days[1])
+	}
+	// an event in the UTC hour that straddles local midnight (18:00-19:00 UTC =
+	// 23:30-00:30 IST) is counted once, on the day/hour where that hour starts
+	s.AddEvent(Event{ID: "e3", Time: day.Add(23*time.Hour + 50*time.Minute), Kind: "INFO", Severity: "WARN", Message: "z"})
+	days = s.Activity(day, 24*time.Hour, 2)
+	h29 := s.Activity(day, time.Hour, 24)
+	h30 := s.Activity(day.Add(24*time.Hour), time.Hour, 24)
+	sum := func(bs []ActivityBucket) (n int64) {
+		for _, b := range bs {
+			for _, c := range b.Events {
+				n += c
+			}
+		}
+		return
+	}
+	if days[0].Events["WARN"] != 1 || days[1].Events["WARN"] != 0 || h29[23].Events["WARN"] != 1 {
+		t.Fatalf("straddling hour must count once, on the 29th at 23:00: day29=%v day30=%v h29[23]=%v", days[0].Events, days[1].Events, h29[23].Events)
+	}
+	if sum(h29) != sum(days[:1]) || sum(h30) != sum(days[1:]) {
+		t.Fatalf("hours must add up to their day: %d/%d vs %d/%d", sum(h29), sum(h30), sum(days[:1]), sum(days[1:]))
+	}
+	hours := s.Activity(day.Add(24*time.Hour), time.Hour, 24)
+	if hours[0].Label != "00:00" || hours[0].Failures != 1 || hours[0].Events["OK"] != 1 || hours[1].Requests != 0 {
+		t.Fatalf("hour 00 of the 30th: %+v / %+v", hours[0], hours[1])
+	}
+}

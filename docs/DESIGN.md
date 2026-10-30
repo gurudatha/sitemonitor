@@ -300,13 +300,14 @@ bookmarked and the browser's back button works.
 
 | Tab | Shows |
 |---|---|
-| **Dashboard** (landing page) | Only the KPI tiles: websites, healthy, warning, critical, certificates expiring, availability 24h, requests 24h, failed 24h, open incidents. **Clicking a tile lists a short entry for each matching item**, plus the related recent events, and links to the full list (pre-filtered). Click the tile again to close the list. All values come from the database summary |
+| **Dashboard** (landing page) | The KPI tiles on one line: websites, healthy, warning, critical, certificates expiring, availability 24h, requests 24h, failed 24h, open incidents. **Clicking a tile lists a short entry for each matching item**, plus the related recent events, and links to the full list (pre-filtered); click it again to close the list. **With no tile selected** the page shows the **critical errors** (open critical incidents of sites, jobs and the cluster), a chart of **events per day by severity** and a chart of **failed requests per day**, for the last 7/30/90 days; selecting a day's bar, or picking a date, shows that day **per hour** (in the viewer's time zone). Each chart has a hover tooltip, a legend and a table view. All values come from the database |
 | Websites | Every site with each check's latest result and 24h uptime (filter by region and status), plus the TLS compliance matrix. Click a cell for full details and stored counters |
 | Certificates | Certificate expiry, sorted by days left |
 | Incidents | One row per problem (filter open / cleared); click for its full history |
 | Events | All events, filtered by severity, kind and free text |
 | User jobs | **Running jobs**: active jobs. **Add job & programs**: the add-job form and program upload on one page. **Results history**: past runs of all jobs, plus finished jobs. **Clicking a job opens its own page** with actions, definition, statistics and every run's output |
 | Clusters | This server and its peer: mode, owned regions, epoch, heartbeat, config match, check-task counters, replication, witness |
+| Info | How to add user jobs; schedules, limits and exit codes; an extensive **argument reference** (special characters, Python, Perl, sh/bash, PowerShell, Windows batch, executables, JSON escaping for API calls, common pitfalls); API notes for agents; this server's details |
 
 `GET /metrics` (viewer role; Prometheus can use Basic auth) exposes these Prometheus metrics:
 
@@ -419,6 +420,7 @@ feeds both, so both hold the same data.
 | `check_daily` | Per site/check/day (UTC): same columns | Same transaction | `daily_stats_retention` (default 400 days) |
 | `events` | Alerts, recoveries, failovers, config changes, logins | When emitted / replicated | Newest `max_events` |
 | `incidents` | One row per problem, with history (section 6.1) | With each keyed event | Oldest cleared beyond 2,000 removed |
+| `event_hourly`, `result_hourly` | Global counters for the dashboard charts: events per UTC hour by severity; requests and failed requests per UTC hour (all sites and jobs) | Same transaction as each event / result | `daily_stats_retention` (400 days, ~26k rows per year) |
 | `/data/ownership.yaml` | Failover state | On ownership change | — |
 
 **How the stored values are maintained:**

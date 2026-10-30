@@ -37,6 +37,7 @@ func (s *Server) routes() []route {
 
 		{"GET", "/api/status", v, "monitoring", "Everything the dashboard shows: cluster, summary, sites with stored results and stats, events, incidents", "", "", nil, "status object", s.status},
 		{"GET", "/api/summary", v, "monitoring", "KPI summary aggregated by the database", "", "", nil, "summary", s.summary},
+		{"GET", "/api/charts/activity", v, "monitoring", "Events per day (by severity) and requests / failed requests per day for the last N days, or per hour for one day, in the viewer's time zone", "", "", []string{"days", "day=YYYY-MM-DD", "tz=minutes east of UTC"}, "{unit, buckets}", s.activity},
 		{"GET", "/api/stats", v, "monitoring", "Stored counters of every site/check and job (requests, failures, latency, uptime 24h/30d)", "", "", nil, "[]CheckStats", s.stats},
 		{"GET", "/api/history", v, "monitoring", "Last raw results of one site/check (for a job: site=job:<name>, check=job)", "", "", []string{"site", "check", "limit"}, "[]Result", s.history},
 		{"GET", "/api/incidents", v, "monitoring", "Incidents (one per problem: first seen, clears, re-appearances)", "", "", []string{"status=open|cleared"}, "[]Incident", s.incidents},

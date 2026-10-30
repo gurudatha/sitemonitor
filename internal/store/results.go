@@ -90,6 +90,11 @@ func (s *Store) AddResult(r checks.Result) bool {
 			return err
 		}
 
+		// dashboard chart counter (all sites and jobs together)
+		if err := countResultTx(tx, t, crit == 1); err != nil {
+			return err
+		}
+
 		// 3. hourly and daily buckets
 		for _, b := range []struct {
 			table, col string

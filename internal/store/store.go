@@ -177,9 +177,17 @@ func Open(dataDir string, opt Options) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("database schema: %w", err)
 	}
+	if _, err := db.Exec(activitySchema); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("database schema: %w", err)
+	}
 	if err := s.importLegacy(dataDir); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("import results.json: %w", err)
+	}
+	if err := s.ensureActivity(); err != nil { // one-time fill of the chart counters
+		db.Close()
+		return nil, fmt.Errorf("activity counters: %w", err)
 	}
 	return s, nil
 }
@@ -234,6 +242,12 @@ func (s *Store) Maintain(now time.Time) error {
 			return err
 		}
 		if _, err := tx.Exec(`DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY time_ms DESC LIMIT ?)`, s.opt.MaxEvents); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM event_hourly WHERE hour < ?`, ms(now.Add(-s.opt.DailyRetention))/3600000); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM result_hourly WHERE hour < ?`, ms(now.Add(-s.opt.DailyRetention))/3600000); err != nil {
 			return err
 		}
 		_, err := tx.Exec(`DELETE FROM incidents WHERE key IN (

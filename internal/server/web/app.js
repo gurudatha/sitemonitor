@@ -78,7 +78,7 @@ function go(hash) { if (location.hash !== hash) location.hash = hash; else onRou
 
 function onRoute() {
   route = parseHash();
-  const known = ["dashboard", "websites", "certificates", "incidents", "events", "clusters", "jobs"];
+  const known = ["dashboard", "websites", "certificates", "incidents", "events", "clusters", "jobs", "info"];
   if (!known.includes(route.tab)) route.tab = "dashboard";
   document.querySelectorAll(".view").forEach((v) => { v.hidden = v.dataset.view !== route.tab; });
   document.querySelectorAll("nav.tabs a").forEach((a) => a.classList.toggle("active", a.dataset.tab === route.tab));
@@ -90,7 +90,8 @@ function onRoute() {
   if (route.tab === "websites") { $("f-status").value = route.q.get("status") || ""; $("f-region").value = route.q.get("region") || ""; }
   if (route.tab === "incidents") $("f-inc").value = route.q.get("status") || "";
   if (route.tab === "events") { $("f-ev-sev").value = route.q.get("sev") || ""; $("f-ev-q").value = route.q.get("q") || ""; }
-  window.scrollTo(0, 0);
+  const section = route.tab === "info" && route.q.get("s") && document.getElementById(route.q.get("s"));
+  if (section) section.scrollIntoView({ block: "start" }); else window.scrollTo(0, 0);
   renderCurrent();
 }
 window.addEventListener("hashchange", onRoute);
@@ -118,6 +119,7 @@ async function renderCurrent() {
     case "events": return renderEvents(last);
     case "clusters": return renderCluster(last);
     case "jobs": return renderJobs();
+    case "info": return renderAbout(last);
   }
 }
 
@@ -210,8 +212,8 @@ function renderDashboard(d) {
   }));
   const tile = TILES.find((t) => t.key === selected);
   $("selection").hidden = !tile;
-  $("sel-hint").hidden = !!tile;
-  if (!tile) return;
+  $("overview").hidden = !!tile;
+  if (!tile) return renderOverview(d);
   const rows = tile.rows(d);
   const label = typeof tile.label === "function" ? tile.label(m) : tile.label;
   $("sel-title").textContent = `${label} — ${rows.length} item${rows.length === 1 ? "" : "s"}`;
@@ -234,6 +236,132 @@ function openSite(s) {
   const r = (s.status && CHECKS.map((c) => s.results[c]).find((x) => x && x.status === s.status)) || s.results.availability;
   if (r) showDetail(s, r); else go("#/websites");
 }
+
+// ---------- overview (dashboard with no tile selected) ----------
+
+let chartMode = { days: 30, day: "" };   // per day for N days, or per hour for one day
+let chartFetched = 0;
+let chartData = null;
+
+function renderOverview(d) {
+  // 1. critical errors: open CRIT incidents (sites, jobs, cluster)
+  const crit = (d.incidents || []).filter((i) => i.status === "OPEN" && i.severity === "CRIT");
+  $("crit-summary").textContent = crit.length ? `${crit.length} open` : "none";
+  if (crit.length) {
+    $("crit-table").tBodies[0].replaceChildren(...crit.map((i) => clickableRow([
+      el("td", {}, badge("CRIT", "CRIT"), el("span", { cls: "site-name", text: " " + subject(i) })),
+      el("td", { cls: "msg-cell", text: i.message }),
+      el("td", { text: ago(i.first_seen), title: fmtTime(i.first_seen) }),
+      el("td", { cls: "num", text: String(i.occurrences) }),
+      el("td", { text: (i.seen_by || []).join(", ") })], () => showIncident(i), "Show history")));
+  } else emptyRow("crit-table", 5, "No critical errors right now");
+  // 2. charts (counters are refreshed at most every 30 s)
+  if (!chartData || Date.now() - chartFetched > 30000) loadCharts(); else drawCharts();
+}
+
+const tzOffset = () => -new Date().getTimezoneOffset();
+function localDate(t) { const x = new Date(t); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`; }
+
+async function loadCharts() {
+  const q = chartMode.day ? `day=${chartMode.day}` : `days=${chartMode.days}`;
+  try {
+    chartData = await apiJSON(`api/charts/activity?${q}&tz=${tzOffset()}`);
+    chartFetched = Date.now();
+    drawCharts();
+  } catch (_) { /* shown as empty charts */ }
+}
+
+const SEV_SERIES = [
+  { key: "CRIT", label: "Critical", cls: "c-crit" },
+  { key: "WARN", label: "Warning", cls: "c-warn" },
+  { key: "OK", label: "OK / info", cls: "c-ok" },
+];
+
+function drawCharts() {
+  const hourly = chartData.unit === "hour";
+  const b = chartData.buckets;
+  const total = (k) => b.reduce((a, x) => a + (k === "fail" ? x.failures : x.events[k] || 0), 0);
+  $("chart-title").textContent = hourly ? `Activity on ${chartData.day}, per hour` : `Activity, per day (last ${chartData.days} days)`;
+  $("ch-back").hidden = !hourly;
+  $("chart-hint").textContent = hourly ? "Times are in your local time zone." : "Select a day's bar to see it per hour.";
+  $("ch-day").value = chartMode.day || "";
+  $("lg-events").replaceChildren(...SEV_SERIES.map((s) => el("span", { cls: "lg" }, el("i", { cls: "sw " + s.cls }), el("span", { text: `${s.label} ${total(s.key)}` }))));
+  const label = (x) => (hourly ? x.label.slice(0, 2) : x.label.slice(5));
+  const tipTitle = (x) => (hourly ? `${chartData.day} ${x.label}` : new Date(x.start).toLocaleDateString(undefined, { weekday: "short", year: "numeric", month: "short", day: "numeric" }));
+  const drill = hourly ? null : (x) => { chartMode = { days: chartMode.days, day: x.label }; loadCharts(); };
+  barChart($("ch-events"), b, SEV_SERIES.map((s) => ({ ...s, get: (x) => x.events[s.key] || 0 })), { label, tipTitle, onClick: drill });
+  barChart($("ch-fail"), b, [{ key: "fail", label: "Failed requests", cls: "c-crit", get: (x) => x.failures, extra: (x) => `of ${x.requests} requests` }], { label, tipTitle, onClick: drill });
+  $("ch-col").textContent = hourly ? "Hour" : "Day";
+  $("ch-table").tBodies[0].replaceChildren(...b.map((x) => el("tr", {}, el("td", { text: hourly ? x.label : x.label }),
+    ...["CRIT", "WARN", "OK"].map((k) => el("td", { cls: "num", text: String(x.events[k] || 0) })),
+    el("td", { cls: "num", text: String(x.requests) }), el("td", { cls: "num", text: String(x.failures) }))));
+}
+
+// Stacked bar chart in SVG: recessive grid, 2px surface gaps between stacked
+// segments, rounded top, hover tooltip on a full-height hit target per bar.
+const SVGNS = "http://www.w3.org/2000/svg";
+function svg(tag, attrs) { const e = document.createElementNS(SVGNS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); return e; }
+function niceMax(v) {
+  if (v <= 4) return 4;
+  const p = Math.pow(10, Math.floor(Math.log10(v)));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * p >= v) return m * p;
+  return 10 * p;
+}
+const fmtNum = (n) => (n >= 10000 ? Math.round(n / 1000) + "K" : n.toLocaleString());
+
+function barChart(host, buckets, series, opts) {
+  const W = Math.max(host.clientWidth, 320), H = 190, m = { l: 44, r: 8, t: 10, b: 24 };
+  const pw = W - m.l - m.r, ph = H - m.t - m.b;
+  const totals = buckets.map((x) => series.reduce((a, s) => a + s.get(x), 0));
+  const max = niceMax(Math.max(...totals, 0));
+  const y = (v) => m.t + ph - (v / max) * ph;
+  const band = pw / buckets.length, bw = Math.max(2, Math.min(28, band * 0.68));
+  const root = svg("svg", { width: W, height: H, viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": series.map((s) => s.label).join(", ") + " chart" });
+  for (let i = 0; i <= 4; i++) {           // gridlines + y ticks
+    const v = (max / 4) * i, yy = y(v);
+    root.append(svg("line", { x1: m.l, x2: W - m.r, y1: yy, y2: yy, class: i ? "grid" : "axis" }));
+    const t = svg("text", { x: m.l - 6, y: yy + 4, class: "tick", "text-anchor": "end" }); t.textContent = fmtNum(v); root.append(t);
+  }
+  const every = Math.ceil(buckets.length / Math.max(1, Math.floor(pw / 46)));  // x labels that fit
+  const tip = host.querySelector(".tip") || el("div", { cls: "tip" });
+  buckets.forEach((x, i) => {
+    const cx = m.l + band * i + band / 2;
+    let base = 0;
+    const segs = series.map((s) => ({ s, v: s.get(x) })).filter((g) => g.v > 0);
+    segs.forEach((g, j) => {
+      const y0 = y(base), y1 = y(base + g.v);
+      const top = j === segs.length - 1;
+      const h = Math.max(1, y0 - y1 - (j > 0 ? 0 : 0) - (top ? 0 : 2));   // 2px surface gap above each lower segment
+      const x0 = cx - bw / 2, yTop = y0 - h;
+      const r = top ? Math.min(4, bw / 2, h) : 0;
+      root.append(svg("path", { class: "bar " + g.s.cls,
+        d: `M${x0},${y0} V${yTop + r} Q${x0},${yTop} ${x0 + r},${yTop} H${x0 + bw - r} Q${x0 + bw},${yTop} ${x0 + bw},${yTop + r} V${y0} Z` }));
+      base += g.v;
+    });
+    if (i % every === 0) { const t = svg("text", { x: cx, y: H - 6, class: "tick", "text-anchor": "middle" }); t.textContent = opts.label(x); root.append(t); }
+    const hit = svg("rect", { x: m.l + band * i, y: m.t, width: band, height: ph, class: "hit" + (opts.onClick ? " drill" : "") });
+    hit.addEventListener("mouseenter", () => {
+      tip.replaceChildren(el("strong", { text: opts.tipTitle(x) }), ...series.map((s) =>
+        el("div", {}, el("i", { cls: "sw " + s.cls }), el("span", { text: `${s.label}: ${s.get(x).toLocaleString()}${s.extra ? " " + s.extra(x) : ""}` }))),
+        ...(opts.onClick ? [el("div", { cls: "muted", text: "click: show per hour" })] : []));
+      tip.hidden = false;
+      const left = Math.min(Math.max(cx - 90, 0), W - 190);
+      tip.style.left = left + "px"; tip.style.top = "0px";
+      hit.classList.add("on");
+    });
+    hit.addEventListener("mouseleave", () => { tip.hidden = true; hit.classList.remove("on"); });
+    if (opts.onClick) hit.addEventListener("click", () => opts.onClick(x));
+    root.append(hit);
+  });
+  if (!totals.some((v) => v > 0)) { const t = svg("text", { x: m.l + pw / 2, y: m.t + ph / 2, class: "tick", "text-anchor": "middle" }); t.textContent = "no data in this period"; root.append(t); }
+  tip.hidden = true;
+  host.replaceChildren(root, tip);
+}
+
+$("ch-days").addEventListener("change", () => { chartMode = { days: Number($("ch-days").value), day: "" }; loadCharts(); });
+$("ch-day").addEventListener("change", () => { if ($("ch-day").value) { chartMode = { days: chartMode.days, day: $("ch-day").value }; loadCharts(); } });
+$("ch-back").addEventListener("click", () => { chartMode = { days: chartMode.days, day: "" }; loadCharts(); });
+window.addEventListener("resize", () => { if (chartData && route.tab === "dashboard" && !$("overview").hidden) drawCharts(); });
 
 // ---------- websites, certificates, incidents, events, clusters ----------
 
@@ -366,6 +494,18 @@ function renderCluster(d) {
       ...(c.takeover_blocked ? [["Takeover blocked", c.takeover_blocked]] : []),
     ])));
   $("cluster").replaceChildren(self, peer);
+}
+
+function renderAbout(d) {
+  const c = d.cluster;
+  $("about").replaceChildren(...kv([
+    ["Server", `${c.node_name} (${c.node}), region ${c.region}`],
+    ["Peer", `${c.peer_name} (${c.peer_id}), region ${c.peer_region}: ${c.peer_status}`],
+    ["Signed in as", `${me.user.display_name} · ${me.user.role} (${me.user.provider})`],
+    ["Websites", `${d.summary.websites} configured · sites.yaml version ${d.config.version}`],
+    ["User jobs", jobsAvailable ? `enabled · intervals ${jobOpts.intervals.join(", ")} · user window max ${jobOpts.user_max_run_for}` : "disabled on this server"],
+    ["Remote credentials", jobsAvailable && jobOpts.credentials.length ? jobOpts.credentials.join(", ") : "none configured"],
+  ]));
 }
 
 // ---------- detail dialogs ----------

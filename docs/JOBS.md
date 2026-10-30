@@ -175,6 +175,20 @@ In the dashboard, the **User jobs** tab has three pages:
 A job's page shows its actions, its definition, statistics and the
 output of every run.
 
+The dashboard's **Info** tab has a full reference for **argument
+formatting**: what to type for spaces, quotes, `$`, backslashes,
+wildcards, `& | < >`, `%`, `!`, JSON, regexes, URLs and Unicode, with
+examples for Python, Perl, sh/bash, PowerShell, Windows batch and
+executables, and how to escape arguments in API calls (JSON, bash,
+PowerShell, Python). In short:
+- **One line in the form is one argument, exactly as typed.** No shell
+  is involved, so don't add quotes or escapes.
+- Remote Linux and Cygwin servers receive the same bytes. This is
+  verified by `internal/jobs/args_test.go` for Python, Perl and sh,
+  locally and over SSH.
+- **Windows batch files** re-parse `& | < > ^ %`, so avoid those
+  characters there.
+
 ### API (for people and agents)
 
 Agents should use an **API token** (admin: `POST /api/tokens`) and send

@@ -74,6 +74,8 @@ on remote servers) have their own guide with all endpoints and examples:
 | `POST /api/tokens` | admin | Create a token; returns the secret once |
 | `DELETE /api/tokens/{id}` | admin | Revoke a token |
 | `GET /api/summary` | viewer | KPI summary (database aggregate) |
+| `GET /api/charts/activity?days=30&tz=330` | viewer | Per local day: events by severity, requests, failed requests (last N days, max 400). `tz` = the viewer's UTC offset in minutes |
+| `GET /api/charts/activity?day=2026-10-30&tz=330` | viewer | The same for one day, per local hour |
 | `GET /api/stats` | viewer | Stored counters of every site/check and job |
 | `GET /api/events?limit=` | viewer | Newest events |
 
