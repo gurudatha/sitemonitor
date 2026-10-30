@@ -180,3 +180,22 @@ func (s *Store) LastResultTime(site, check string) time.Time {
 	s.db.QueryRow(`SELECT time_ms FROM check_state WHERE site = ? AND check_name = ?`, site, check).Scan(&t)
 	return nullMs(t)
 }
+
+// RecentResults returns the newest n raw results of one check type across all
+// sites (e.g. every job run), newest first.
+func (s *Store) RecentResults(check string, n int) []checks.Result {
+	rows, err := s.db.Query(`SELECT id, site, check_name, region, node, node_region, status, message, latency_ms, details, time_ms
+		FROM results WHERE check_name = ? ORDER BY time_ms DESC LIMIT ?`, check, n)
+	if err != nil {
+		logErr("recent results", err)
+		return nil
+	}
+	defer rows.Close()
+	out := []checks.Result{}
+	for rows.Next() {
+		if r, err := scanResult(rows); err == nil {
+			out = append(out, r)
+		}
+	}
+	return out
+}

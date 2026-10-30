@@ -294,17 +294,19 @@ is also available at `GET /api/incidents`.
 
 ## 8. Observability
 
-The dashboard shows:
-- KPI tiles: websites healthy/warning/critical/pending, certificates
-  expiring, availability, requests and failures over 24 h, open
-  incidents. All of these come from the database summary.
-- A cluster panel for this server and its peer: mode, owned regions,
-  epoch, heartbeat age, config match, replication lag and witness status
-- A table of sites with their region and where they were checked from
-- A certificate expiry board, sorted by days remaining
-- A TLS compliance matrix
-- An event log
-- Click any cell for the full details of that result
+The dashboard is a single-page app with one tab per section. Each page
+has its own address (`#/websites`, `#/jobs/<id>`, …), so pages can be
+bookmarked and the browser's back button works.
+
+| Tab | Shows |
+|---|---|
+| **Dashboard** (landing page) | Only the KPI tiles: websites, healthy, warning, critical, certificates expiring, availability 24h, requests 24h, failed 24h, open incidents. **Clicking a tile lists a short entry for each matching item**, plus the related recent events, and links to the full list (pre-filtered). Click the tile again to close the list. All values come from the database summary |
+| Websites | Every site with each check's latest result and 24h uptime (filter by region and status), plus the TLS compliance matrix. Click a cell for full details and stored counters |
+| Certificates | Certificate expiry, sorted by days left |
+| Incidents | One row per problem (filter open / cleared); click for its full history |
+| Events | All events, filtered by severity, kind and free text |
+| User jobs | **Running jobs**: active jobs. **Add job & programs**: the add-job form and program upload on one page. **Results history**: past runs of all jobs, plus finished jobs. **Clicking a job opens its own page** with actions, definition, statistics and every run's output |
+| Clusters | This server and its peer: mode, owned regions, epoch, heartbeat, config match, check-task counters, replication, witness |
 
 `GET /metrics` (viewer role; Prometheus can use Basic auth) exposes these Prometheus metrics:
 

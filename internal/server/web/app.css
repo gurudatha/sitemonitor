@@ -107,3 +107,54 @@ details.bins { margin-top: 10px; }
 details.bins summary { cursor: pointer; font-size: 13px; margin-bottom: 8px; }
 pre.out { white-space: pre-wrap; word-break: break-word; max-height: 220px; overflow: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 12px; margin: 4px 0 0; }
 .pending-merge { color: var(--warn); font-weight: 600; }
+
+/* ---------- navigation ---------- */
+nav.tabs { display: flex; gap: 2px; padding: 0 24px; background: var(--panel); border-bottom: 1px solid var(--border); overflow-x: auto; position: sticky; top: 0; z-index: 5; }
+nav.tabs a { padding: 11px 14px; color: var(--muted); text-decoration: none; font-weight: 500; border-bottom: 2px solid transparent; white-space: nowrap; }
+nav.tabs a:hover { color: var(--text); }
+nav.tabs a.active { color: var(--info); border-bottom-color: var(--info); }
+nav.tabs .count:not(:empty) { margin-left: 4px; font-size: 11px; padding: 1px 6px; border-radius: 999px; background: var(--info-bg); color: var(--info); }
+nav.tabs .count.warn:not(:empty) { background: var(--warn-bg); color: var(--warn); }
+nav.tabs .count.crit:not(:empty) { background: var(--crit-bg); color: var(--crit); }
+nav.subtabs { display: flex; gap: 6px; margin-bottom: 18px; flex-wrap: wrap; }
+nav.subtabs a { padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); text-decoration: none; font-size: 13px; background: var(--panel); }
+nav.subtabs a.active { background: var(--info); border-color: var(--info); color: #fff; }
+.view h2 { margin-bottom: 12px; }
+h2.spaced { margin-top: 28px; }
+.sub-h { margin: 22px 0 8px; font-size: 14px; }
+a.link { color: var(--info); text-decoration: none; font-size: 13px; }
+a.link:hover { text-decoration: underline; }
+
+/* ---------- dashboard tiles (buttons) + selection ---------- */
+button.kpi { text-align: left; cursor: pointer; font: inherit; color: inherit; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; transition: border-color .12s, box-shadow .12s; }
+button.kpi:hover { border-color: var(--muted); }
+button.kpi.selected { border-color: var(--info); box-shadow: 0 0 0 2px var(--info-bg) inset, 0 0 0 1px var(--info); }
+button.kpi:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.selection { margin-top: 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.selection .table-wrap { border: 0; }
+.selection-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.selection-head h2 { margin: 0 0 10px; }
+.hint { margin-top: 16px; }
+.events.compact { max-height: 260px; }
+td.msg-cell { color: var(--muted); max-width: 420px; }
+tr.clickable { cursor: pointer; }
+tr.clickable:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+
+/* ---------- cards, forms, job detail ---------- */
+.two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 20px; align-items: start; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+.card h2, .card h3 { margin-top: 0; }
+.form-grid { min-width: 0; }
+label.check { display: flex !important; align-items: center; gap: 6px; }
+.filters label.check { color: var(--muted); font-size: 13px; }
+.filters input[type=search] { font: inherit; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); }
+.ok-msg { color: var(--ok); margin: 0; font-size: 13px; min-height: 1em; }
+dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; font-size: 13px; }
+dl.kv dt { color: var(--muted); }
+dl.kv dd { margin: 0; overflow-wrap: anywhere; }
+.actions.big { margin: 4px 0 18px; }
+.actions.big button { font-size: 13px; padding: 5px 12px; }
+article.run { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; font-size: 13px; }
+pre.out.err { border-color: var(--crit-bg); }
+#jd-title { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+@media (max-width: 520px) { nav.tabs { padding: 0 8px; } .two-col { grid-template-columns: 1fr; } }

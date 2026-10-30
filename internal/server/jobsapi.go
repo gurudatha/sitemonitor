@@ -25,6 +25,7 @@ func (s *Server) jobRoutes() []route {
 		{"GET", "/api/jobs", v, "jobs", "All jobs with their state, last run and stored run counters", "", "", []string{"scope=user|admin", "owner", "merge=pending"}, "[]JobView", s.listJobs},
 		{"POST", "/api/jobs", op, "jobs", "Add a job. User jobs run immediately for their window (<= 24h); admins create admin periodic activities (scope admin, no limit)",
 			`{"name","description","region":"IDC|FC","binary","args":[],"schedule":{"type":"interval|startup","every":"1m|2m|5m|10m|15m|20m|30m|60m|1h|2h|4h|6h","run_for":"8h"},"timeout":"2m","target":{"host","port":22,"os":"linux|windows-cygwin","credential"} (omit for local),"scope":"user|admin" (admins)}`, "", nil, "Job", s.createJob},
+		{"GET", "/api/jobs/runs", v, "jobs", "Past runs of all jobs, newest first (exit code, output, trigger, server)", "", "", []string{"limit", "status=OK|WARN|CRIT", "job"}, "[]Result", s.allJobRuns},
 		{"GET", "/api/jobs/{id}", v, "jobs", "One job", "", "", nil, "JobView", s.getJob},
 		{"PUT", "/api/jobs/{id}", op, "jobs", "Change a job (owner or admin); the run window restarts now", "same as POST /api/jobs (name cannot change)", "", nil, "Job", s.updateJob},
 		{"DELETE", "/api/jobs/{id}", op, "jobs", "Delete a job (owner or admin)", "", "", nil, "204", s.deleteJob},
@@ -209,6 +210,25 @@ func (s *Server) jobRuns(w http.ResponseWriter, r *http.Request) {
 		n = 50
 	}
 	writeJSON(w, s.Jobs.Runs(j, n))
+}
+
+func (s *Server) allJobRuns(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	n, _ := strconv.Atoi(q.Get("limit"))
+	if n <= 0 || n > 1000 {
+		n = 200
+	}
+	out := []checks.Result{}
+	for _, res := range s.Store.RecentResults("job", n) {
+		if st := q.Get("status"); st != "" && res.Status != st {
+			continue
+		}
+		if j := q.Get("job"); j != "" && res.Site != "job:"+j {
+			continue
+		}
+		out = append(out, res)
+	}
+	writeJSON(w, out)
 }
 
 type reasonBody struct {

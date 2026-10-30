@@ -21,136 +21,209 @@
   </section>
 
   <div id="app-view" hidden>
-  <header class="top">
-    <div>
-      <h1>Site Monitor</h1>
-      <p class="sub" id="whoami">connecting…</p>
-    </div>
-    <div class="top-right">
-      <span class="badge" id="mode-badge">…</span>
-      <span class="muted" id="updated"></span>
-      <span class="user" id="user"></span>
-      <button id="logout" class="link">Sign out</button>
-    </div>
-  </header>
-
-  <main>
-    <section class="kpis" id="kpis"></section>
-
-    <section>
-      <h2>Cluster</h2>
-      <div class="cluster" id="cluster"></div>
-    </section>
-
-    <section>
-      <h2>Websites</h2>
-      <div class="filters">
-        <label>Region
-          <select id="f-region"><option value="">All</option><option>IDC</option><option>FC</option></select>
-        </label>
-        <label>Status
-          <select id="f-status"><option value="">All</option><option value="CRIT">Critical</option><option value="WARN">Warning</option><option value="OK">OK</option></select>
-        </label>
+    <header class="top">
+      <div>
+        <h1>Site Monitor</h1>
+        <p class="sub" id="whoami">connecting…</p>
       </div>
-      <div class="table-wrap">
-        <table id="sites">
-          <thead><tr>
-            <th>Site</th><th>Region</th><th>Checked from</th>
-            <th>Up/Down</th><th>TLS</th><th>Certificate</th><th>Headers</th><th>API</th><th>Uptime</th>
-          </tr></thead>
-          <tbody></tbody>
-        </table>
+      <div class="top-right">
+        <span class="badge" id="mode-badge">…</span>
+        <span class="muted" id="updated"></span>
+        <span class="user" id="user"></span>
+        <button id="logout" class="link">Sign out</button>
       </div>
-    </section>
+    </header>
 
-    <div class="two-col">
-      <section>
-        <h2>Certificate expiry</h2>
-        <div class="table-wrap"><table id="certs"><thead><tr><th>Site</th><th>Days left</th><th>Expires</th><th>Chain</th></tr></thead><tbody></tbody></table></div>
+    <nav class="tabs" aria-label="Sections">
+      <a href="#/" data-tab="dashboard">Dashboard</a>
+      <a href="#/websites" data-tab="websites">Websites</a>
+      <a href="#/certificates" data-tab="certificates">Certificates</a>
+      <a href="#/incidents" data-tab="incidents">Incidents <span class="count" id="nav-incidents"></span></a>
+      <a href="#/events" data-tab="events">Events</a>
+      <a href="#/jobs" data-tab="jobs" id="nav-jobs" hidden>User jobs <span class="count" id="nav-jobs-count"></span></a>
+      <a href="#/clusters" data-tab="clusters">Clusters</a>
+    </nav>
+
+    <main>
+      <!-- ============ Dashboard (landing): KPI tiles only; a tile shows its items ============ -->
+      <section class="view" data-view="dashboard">
+        <div class="kpis" id="kpis" role="toolbar" aria-label="Summary; select a tile to list its items"></div>
+        <section class="selection" id="selection" hidden>
+          <header class="selection-head">
+            <h2 id="sel-title"></h2>
+            <a class="link" id="sel-more" href="#/">Open full list →</a>
+          </header>
+          <div class="table-wrap"><table id="sel-table"><thead></thead><tbody></tbody></table></div>
+          <h3 class="sub-h">Related events</h3>
+          <ol class="events compact" id="sel-events"></ol>
+        </section>
+        <p class="muted hint" id="sel-hint">Select a tile to list its items.</p>
       </section>
-      <section>
-        <h2>TLS compliance</h2>
+
+      <!-- ============ Websites ============ -->
+      <section class="view" data-view="websites" hidden>
+        <h2>Websites</h2>
+        <div class="filters">
+          <label>Region
+            <select id="f-region"><option value="">All</option><option>IDC</option><option>FC</option></select>
+          </label>
+          <label>Status
+            <select id="f-status"><option value="">All</option><option value="CRIT">Critical</option><option value="WARN">Warning</option><option value="OK">Healthy</option><option value="PENDING">Pending</option></select>
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table id="sites">
+            <thead><tr><th>Site</th><th>Region</th><th>Checked from</th><th>Up/Down</th><th>TLS</th><th>Certificate</th><th>Headers</th><th>API</th><th>Uptime 24h</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <h2 class="spaced">TLS compliance</h2>
         <div class="table-wrap"><table id="tls"><thead><tr><th>Site</th><th>1.0</th><th>1.1</th><th>1.2</th><th>1.3</th><th>Weak cipher</th></tr></thead><tbody></tbody></table></div>
       </section>
-    </div>
 
-    <section id="jobs-section" hidden>
-      <h2>Periodic jobs <span class="muted" id="jobs-summary"></span></h2>
-      <p class="muted">Programs from the shared binaries directory (Python, Perl, PowerShell, shell or any executable), run on an interval or when the server comes up, locally or on a remote Linux / Windows (Cygwin) server. User jobs run right away for up to 24 hours; merging into the admin's periodic activities needs admin approval.</p>
-      <div class="editor-bar" id="jobs-actions">
-        <button id="job-add" class="primary">Add job</button>
-        <button id="bin-upload">Upload program</button>
-        <label class="muted"><input type="checkbox" id="jobs-mine"> only mine</label>
-      </div>
-      <div class="table-wrap">
-        <table id="jobs">
-          <thead><tr><th>Job</th><th>Scope</th><th>State</th><th>Program</th><th>Schedule</th><th>Where</th><th>Last run</th><th>Runs</th><th>Actions</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-      <details class="bins"><summary>Programs in the binaries directory <span class="muted" id="bins-summary"></span></summary>
-        <div class="table-wrap"><table id="bins"><thead><tr><th>Name</th><th>Kind</th><th>Size</th><th>SHA-256</th><th>Uploaded by</th><th></th></tr></thead><tbody></tbody></table></div>
-      </details>
-    </section>
+      <!-- ============ Certificates ============ -->
+      <section class="view" data-view="certificates" hidden>
+        <h2>Certificate expiry</h2>
+        <div class="table-wrap"><table id="certs"><thead><tr><th>Site</th><th>Days left</th><th>Expires</th><th>Issuer</th><th>Chain</th></tr></thead><tbody></tbody></table></div>
+      </section>
 
-    <section>
-      <h2>Incidents <span class="muted" id="incidents-summary"></span></h2>
-      <p class="muted">The same problem is tracked once: its first occurrence and date are kept, repeats are counted, and every clear and re-appearance is recorded.</p>
-      <div class="table-wrap">
-        <table id="incidents">
-          <thead><tr><th>Status</th><th>Problem</th><th>First seen</th><th>Last change</th><th>Seen</th><th>Cleared</th><th>Reappeared</th><th>Reported by</th></tr></thead>
-          <tbody></tbody>
-        </table>
-      </div>
-    </section>
+      <!-- ============ Incidents ============ -->
+      <section class="view" data-view="incidents" hidden>
+        <h2>Incidents <span class="muted" id="incidents-summary"></span></h2>
+        <p class="muted">The same problem is tracked once: its first occurrence and date are kept, repeats are counted, and every clear and re-appearance is recorded.</p>
+        <div class="filters">
+          <label>Status <select id="f-inc"><option value="">All</option><option value="OPEN">Open</option><option value="CLEARED">Cleared</option></select></label>
+        </div>
+        <div class="table-wrap">
+          <table id="incidents">
+            <thead><tr><th>Status</th><th>Problem</th><th>First seen</th><th>Last change</th><th>Seen</th><th>Cleared</th><th>Reappeared</th><th>Reported by</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
 
-    <section>
-      <h2>Events</h2>
-      <ol class="events" id="events"></ol>
-    </section>
+      <!-- ============ Events ============ -->
+      <section class="view" data-view="events" hidden>
+        <h2>Events</h2>
+        <div class="filters">
+          <label>Severity <select id="f-ev-sev"><option value="">All</option><option value="CRIT">Critical</option><option value="WARN">Warning</option><option value="OK">OK</option></select></label>
+          <label>Kind <select id="f-ev-kind"><option value="">All</option></select></label>
+          <label>Search <input id="f-ev-q" type="search" placeholder="site, server, text"></label>
+        </div>
+        <ol class="events" id="events"></ol>
+      </section>
 
-    <dialog id="job-dialog">
-      <form id="job-form" class="form-grid">
-        <h3 id="job-form-title">Add job</h3>
-        <label>Name <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,62}" title="lower-case letters, digits, . _ -"></label>
-        <label>Description <input name="description" maxlength="500"></label>
-        <label>Program <select name="binary" required></select></label>
-        <label>Arguments <span class="muted">(one per line, passed as-is, no shell)</span><textarea name="args" rows="3"></textarea></label>
-        <label>Run <select name="type"><option value="interval">on an interval</option><option value="startup">once, when the server comes up</option></select></label>
-        <label class="when-interval">Every <select name="every"></select></label>
-        <label class="when-interval">For <select name="run_for"></select></label>
-        <label>Timeout <input name="timeout" placeholder="default"></label>
-        <label>Region <select name="region"><option>IDC</option><option>FC</option></select></label>
-        <label>Where <select name="where"><option value="local">on the monitor server</option><option value="remote">on a remote server (SSH)</option></select></label>
-        <fieldset class="when-remote">
-          <label>Host / IP <input name="host"></label>
-          <label>Port <input name="port" type="number" value="22" min="1" max="65535"></label>
-          <label>OS <select name="os"><option value="linux">Linux</option><option value="windows-cygwin">Windows (Cygwin)</option></select></label>
-          <label>Credential <select name="credential"></select></label>
-        </fieldset>
-        <label class="admin-only"><input type="checkbox" name="as_user"> create as a user job (24h limit) instead of an admin activity</label>
-        <p class="error" id="job-error" role="alert"></p>
-        <div class="editor-bar"><button type="submit" class="primary">Save</button><button type="button" id="job-cancel">Cancel</button></div>
-      </form>
-    </dialog>
+      <!-- ============ Clusters ============ -->
+      <section class="view" data-view="clusters" hidden>
+        <h2>Clusters</h2>
+        <div class="cluster" id="cluster"></div>
+      </section>
 
-    <dialog id="upload-dialog">
-      <form id="upload-form" class="form-grid">
-        <h3>Upload program</h3>
-        <label>File <input type="file" name="file" required></label>
-        <label>Name <input name="name" placeholder="defaults to the file name"></label>
-        <p class="muted">Replacing a program used by an admin activity stops that job until an admin re-approves it. Your own user jobs switch to the new version.</p>
-        <p class="error" id="upload-error" role="alert"></p>
-        <div class="editor-bar"><button type="submit" class="primary">Upload</button><button type="button" id="upload-cancel">Cancel</button></div>
-      </form>
-    </dialog>
+      <!-- ============ User jobs ============ -->
+      <section class="view" data-view="jobs" hidden>
+        <nav class="subtabs" aria-label="User jobs">
+          <a href="#/jobs" data-sub="running">Running jobs</a>
+          <a href="#/jobs/add" data-sub="add" id="sub-add">Add job &amp; programs</a>
+          <a href="#/jobs/history" data-sub="history">Results history</a>
+        </nav>
 
-    <dialog id="detail">
-      <form method="dialog"><button class="close" aria-label="Close">×</button></form>
-      <h3 id="detail-title"></h3>
-      <dl id="detail-body"></dl>
-    </dialog>
-  </main>
+        <!-- running -->
+        <div class="subview" data-subview="running">
+          <h2>Running jobs <span class="muted" id="jobs-summary"></span></h2>
+          <div class="filters">
+            <label>Scope <select id="f-job-scope"><option value="">All</option><option value="user">User jobs</option><option value="admin">Admin activities</option></select></label>
+            <label class="check"><input type="checkbox" id="jobs-mine"> only mine</label>
+            <label class="check"><input type="checkbox" id="jobs-all"> include expired / disabled</label>
+          </div>
+          <div class="table-wrap">
+            <table id="jobs">
+              <thead><tr><th>Job</th><th>Scope</th><th>State</th><th>Program</th><th>Schedule</th><th>Where</th><th>Last run</th><th>Runs</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="muted">Select a job to open its details, actions and results.</p>
+        </div>
+
+        <!-- add job + upload program -->
+        <div class="subview two-col" data-subview="add" hidden>
+          <section class="card">
+            <form id="job-form" class="form-grid">
+              <h2>Add job</h2>
+              <p class="muted">User jobs run immediately, for at most 24 hours. Use "Request merge" on the job's page to make it a permanent admin activity.</p>
+              <label>Name <input name="name" required pattern="[a-z0-9][a-z0-9._\-]{0,62}" title="lower-case letters, digits, . _ -"></label>
+              <label>Description <input name="description" maxlength="500"></label>
+              <label>Program <select name="binary" required></select></label>
+              <label>Arguments <span class="muted">(one per line, passed as-is, no shell)</span><textarea name="args" rows="3"></textarea></label>
+              <label>Run <select name="type"><option value="interval">on an interval</option><option value="startup">once, when the server comes up</option></select></label>
+              <label class="when-interval">Every <select name="every"></select></label>
+              <label>For <select name="run_for"></select></label>
+              <label>Timeout <input name="timeout" placeholder="default"></label>
+              <label>Region <select name="region"><option>IDC</option><option>FC</option></select></label>
+              <label>Where <select name="where"><option value="local">on the monitor server</option><option value="remote">on a remote server (SSH)</option></select></label>
+              <fieldset class="when-remote">
+                <label>Host / IP <input name="host"></label>
+                <label>Port <input name="port" type="number" value="22" min="1" max="65535"></label>
+                <label>OS <select name="os"><option value="linux">Linux</option><option value="windows-cygwin">Windows (Cygwin)</option></select></label>
+                <label>Credential <select name="credential"></select></label>
+              </fieldset>
+              <label class="check admin-only"><input type="checkbox" name="as_user"> create as a user job (24h limit) instead of an admin activity</label>
+              <p class="error" id="job-error" role="alert"></p>
+              <p class="ok-msg" id="job-ok" role="status"></p>
+              <div class="editor-bar"><button type="submit" class="primary">Add job</button></div>
+            </form>
+          </section>
+          <section class="card">
+            <form id="upload-form" class="form-grid">
+              <h2>Upload program</h2>
+              <p class="muted">Python, Perl, PowerShell, shell scripts or executables. Names: letters, digits, <code>.</code> <code>_</code> <code>-</code>. Windows <code>.exe</code> files run on remote Windows (Cygwin) servers.</p>
+              <label>File <input type="file" name="file" required></label>
+              <label>Name <input name="name" placeholder="defaults to the file name"></label>
+              <p class="error" id="upload-error" role="alert"></p>
+              <p class="ok-msg" id="upload-ok" role="status"></p>
+              <div class="editor-bar"><button type="submit" class="primary">Upload</button></div>
+            </form>
+            <h3 class="sub-h">Programs in the binaries directory <span class="muted" id="bins-summary"></span></h3>
+            <div class="table-wrap"><table id="bins"><thead><tr><th>Name</th><th>Kind</th><th>Size</th><th>SHA-256</th><th>Uploaded by</th><th></th></tr></thead><tbody></tbody></table></div>
+          </section>
+        </div>
+
+        <!-- history -->
+        <div class="subview" data-subview="history" hidden>
+          <h2>Results history</h2>
+          <div class="filters">
+            <label>Result <select id="f-run-status"><option value="">All</option><option value="CRIT">Failed</option><option value="WARN">Warning</option><option value="OK">OK</option></select></label>
+            <label>Job <select id="f-run-job"><option value="">All</option></select></label>
+          </div>
+          <div class="table-wrap">
+            <table id="runs">
+              <thead><tr><th>When</th><th>Job</th><th>Result</th><th>Trigger</th><th>Server</th><th>Target</th><th>Duration</th><th>Message</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <h3 class="sub-h">Finished jobs</h3>
+          <div class="table-wrap"><table id="jobs-done"><thead><tr><th>Job</th><th>Scope</th><th>State</th><th>Program</th><th>Ended</th><th>Runs</th></tr></thead><tbody></tbody></table></div>
+        </div>
+
+        <!-- job detail page -->
+        <div class="subview" data-subview="detail" hidden>
+          <a class="link" href="#/jobs">← Running jobs</a>
+          <h2 id="jd-title"></h2>
+          <div class="actions big" id="jd-actions"></div>
+          <div class="two-col">
+            <section class="card"><h3>Definition</h3><dl class="kv" id="jd-def"></dl></section>
+            <section class="card"><h3>Statistics</h3><dl class="kv" id="jd-stats"></dl></section>
+          </div>
+          <h3 class="sub-h">Runs</h3>
+          <div id="jd-runs"></div>
+        </div>
+      </section>
+
+      <dialog id="detail">
+        <form method="dialog"><button class="close" aria-label="Close">×</button></form>
+        <h3 id="detail-title"></h3>
+        <dl id="detail-body"></dl>
+      </dialog>
+    </main>
   </div>
 </body>
 </html>

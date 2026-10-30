@@ -165,7 +165,17 @@ The result is a `STARTUP` event:
 - OK if the hook returns 0
 - WARN with the return code otherwise
 
-## 6. API (for people and agents)
+## 6. Dashboard and API
+
+In the dashboard, the **User jobs** tab has three pages:
+- **Running jobs**: the active jobs. Click a job to open its page.
+- **Add job & programs**: add a job and upload programs.
+- **Results history**: past runs of all jobs, and finished jobs.
+
+A job's page shows its actions, its definition, statistics and the
+output of every run.
+
+### API (for people and agents)
 
 Agents should use an **API token** (admin: `POST /api/tokens`) and send
 `Authorization: Bearer <token>`. The complete, machine-readable

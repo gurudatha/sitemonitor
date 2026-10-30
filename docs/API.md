@@ -66,7 +66,7 @@ providers (`auth.providers`: local users or Active Directory). See
 
 Periodic jobs (programs run on an interval or at server start, locally or
 on remote servers) have their own guide with all endpoints and examples:
-**[JOBS.md §6](JOBS.md#6-api-for-people-and-agents)**.
+**[JOBS.md §6](JOBS.md#6-dashboard-and-api)**.
 
 | Method & path | Role | Description |
 |---|---|---|

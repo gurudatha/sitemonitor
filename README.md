@@ -66,9 +66,12 @@ Key properties:
   backups, immediate apply and automatic sync to the peer server.
 - **Everything is configurable in YAML.** Server and peer names,
   goroutine and worker pools, queues, size limits, timeouts.
-- **Dashboard.
-  Includes a cluster panel, certificate expiry board, TLS compliance
-  matrix and event log, plus Prometheus `/metrics`.
+- **Dashboard with tabs.** A minimal landing page of KPI tiles; clicking
+  a tile lists the matching items and their recent events. Websites,
+  Certificates, Incidents, Events, User jobs and Clusters each have
+  their own tab, and every job has its own detail page.
+- **Secure web UI.** Served over HTTPS with a strict Content Security
+  Policy and login, plus Prometheus `/metrics`.
 
 ## Quick start (local demo)
 
