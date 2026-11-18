@@ -159,6 +159,7 @@ docs/                   design, compilation and deployment guides
 | [docs/API.md](docs/API.md) | Every HTTP endpoint: login, status, configuration API, roles, examples |
 | [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) | Local users (POC) vs Active Directory (production), roles, lockout, audit |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment across IDC, FC and the witness; certificates, configuration, operations runbook, troubleshooting |
+| [docs/SPEC.md](docs/SPEC.md) | Full requirements specification: request history and decisions, every config key, API route, table and behaviour, acceptance tests, and a prompt to regenerate the system with Claude |
 
 ## Configuration in brief
 
